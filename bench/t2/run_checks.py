@@ -8,6 +8,7 @@ Run: uv run python bench/t2/run_checks.py
 from __future__ import annotations
 
 import json
+import os
 import statistics
 import subprocess
 import time
@@ -21,7 +22,9 @@ STATE = HERE.parents[1] / "runs" / "t2"
 GW_IMAGE = "cr.agentgateway.dev/agentgateway:v1.6.0"
 PY_IMAGE = "ghcr.io/openhands/agent-server:1.58.2-python"
 NET, INTERNAL = "atolye-t2", "atolye-internal"
-GW, ECHO, PORT = "atolye-t2-gw", "atolye-t2-echo", 14100
+GW, ECHO, FRONT, PORT = "atolye-t2-gw", "atolye-t2-echo", "atolye-t2-front", 14100
+# The chain under test: client -> front filter -> agentgateway -> upstream. Set T2_DIRECT_GW=1 to test agentgateway alone.
+DIRECT_GW = os.environ.get("T2_DIRECT_GW") == "1"
 URL = f"http://127.0.0.1:{PORT}/v1/chat/completions"
 KEY_ALL, KEY_ECHO_ONLY, KEY_LATE = "vk-t2-all-5d1c", "vk-t2-echo-9a7e", "vk-t2-late-3b2f"
 UPSTREAM_SECRET = "UPSTREAM-SECRET-0123456789"
@@ -91,9 +94,17 @@ def setup() -> None:
     sh("podman", "run", "-d", "--name", ECHO, "--network", NET, "--userns=keep-id", "--user", f"{uid}:{gid}",
        "-v", f"{HERE / 'echo_upstream.py'}:/echo.py:ro,Z", "-v", f"{STATE / 'echo'}:/log:Z",
        "--entrypoint", "python3", PY_IMAGE, "/echo.py")
+    gw_ports = ["-p", f"127.0.0.1:{PORT}:4000"] if DIRECT_GW else []
     sh("podman", "run", "-d", "--name", GW, "--network", NET, "--network", INTERNAL, "--userns=keep-id",
-       "--user", f"{uid}:{gid}", "-p", f"127.0.0.1:{PORT}:4000",
+       "--user", f"{uid}:{gid}", *gw_ports,
        "-v", f"{STATE / 'config.yaml'}:/config.yaml:Z", "-v", f"{STATE / 'data'}:/data:Z", GW_IMAGE, "-f", "/config.yaml")
+    if not DIRECT_GW:
+        (STATE / "redact.txt").write_text(UPSTREAM_SECRET + "\n")
+        sh("podman", "run", "-d", "--name", FRONT, "--network", NET, "--userns=keep-id", "--user", f"{uid}:{gid}",
+           "-p", f"127.0.0.1:{PORT}:4000", "-e", f"UPSTREAM=http://{GW}:4000", "-e", "SECRETS_FILE=/redact.txt",
+           "-v", f"{STATE / 'redact.txt'}:/redact.txt:ro,Z",
+           "-v", f"{HERE.parents[1] / 'stack' / 'front' / 'front_filter.py'}:/front_filter.py:ro,Z",
+           "--entrypoint", "python3", PY_IMAGE, "/front_filter.py")
     for _ in range(60):
         try:
             if post({"model": "echo", "messages": [{"role": "user", "content": "ping"}]})[0] == 200:
@@ -105,7 +116,7 @@ def setup() -> None:
 
 
 def teardown() -> None:
-    sh("podman", "rm", "-f", "-t", "3", GW, ECHO, check=False)
+    sh("podman", "rm", "-f", "-t", "3", FRONT, GW, ECHO, check=False)
     sh("podman", "network", "rm", NET, check=False)
 
 

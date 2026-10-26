@@ -1,8 +1,10 @@
-"""The model gateway (agentgateway) and per-job virtual keys.
+"""The model gateway (front filter + agentgateway) and per-job virtual keys.
 
-Sandboxes join only the internal network, where the gateway is the one reachable service. Each job gets its own
-virtual key, added to the gateway's config file before the job and removed after it; usage is read back from the
-gateway's JSON access log by job id.
+Sandboxes join only `atolye-internal`, where the front filter is the one reachable service. The filter forwards only
+allowlisted headers and redacts configured secrets in responses; behind it, on a second internal network,
+agentgateway holds provider keys, checks per-job virtual keys and counts usage. Each job gets its own virtual key,
+added to the gateway's config file before the job and removed after it; usage is read back from the gateway's JSON
+access log by job id.
 """
 
 from __future__ import annotations
@@ -20,16 +22,21 @@ from pathlib import Path
 from typing import Iterator
 
 IMAGE = "cr.agentgateway.dev/agentgateway:v1.6.0"
+FRONT_IMAGE = "ghcr.io/openhands/agent-server:1.58.2-python"  # any Python 3.10+ image; this one is already pulled
 NAME = "atolye-gw"
+FRONT = "atolye-front"
 DEFAULT_MODEL = "qwen3.8-27b"  # the gateway's name for the local vLLM model (stack/gateway/config.yaml)
-INTERNAL_NET = "atolye-internal"
+INTERNAL_NET = "atolye-internal"  # sandboxes + front filter
+GW_NET = "atolye-gwnet"  # front filter + agentgateway; sandboxes are never on it
 HOST_PORT = 14000
-INTERNAL_URL = f"http://{NAME}:4000/v1"  # what sandboxes use
-HOST_URL = f"http://127.0.0.1:{HOST_PORT}/v1"  # what the runner uses to probe
+INTERNAL_URL = f"http://{FRONT}:4000/v1"  # what sandboxes use
+HOST_URL = f"http://127.0.0.1:{HOST_PORT}/v1"  # what the runner uses to probe the gateway itself
 REPO = Path(__file__).resolve().parents[2]
 TEMPLATE = REPO / "stack" / "gateway" / "config.yaml"
+FRONT_SCRIPT = REPO / "stack" / "front" / "front_filter.py"
 STATE = REPO / "runs" / "gw"
 KEYS = STATE / "keys.json"
+REDACT = STATE / "redact.txt"  # provider secrets the front filter must never let through (one per line)
 
 
 def _podman(*args: str, check: bool = True) -> subprocess.CompletedProcess:
@@ -57,25 +64,32 @@ def _locked_keys() -> Iterator[list[dict]]:
 
 
 def up() -> None:
-    """Start the gateway if it is not running (idempotent)."""
-    if _podman("container", "exists", NAME, check=False).returncode == 0:
-        return
-    if _podman("network", "exists", INTERNAL_NET, check=False).returncode != 0:
-        _podman("network", "create", "--internal", INTERNAL_NET)
+    """Start the front filter and the gateway if they are not running (idempotent)."""
+    for net, flags in ((INTERNAL_NET, ["--internal"]), (GW_NET, ["--internal"])):
+        if _podman("network", "exists", net, check=False).returncode != 0:
+            _podman("network", "create", *flags, net)
     (STATE / "data").mkdir(parents=True, exist_ok=True)
-    with _locked_keys():
-        pass  # renders the config with the current (normally empty) key list
+    REDACT.touch(exist_ok=True)
     uid = subprocess.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
     gid = subprocess.run(["id", "-g"], capture_output=True, text=True).stdout.strip()
-    _podman("run", "-d", "--name", NAME, "--user", f"{uid}:{gid}", "--userns=keep-id",
-            "--network", "podman", "--network", INTERNAL_NET,
-            "-p", f"127.0.0.1:{HOST_PORT}:4000",
-            "-v", f"{STATE / 'config.yaml'}:/config.yaml:Z", "-v", f"{STATE / 'data'}:/data:Z",
-            IMAGE, "-f", "/config.yaml")
+    user = ["--user", f"{uid}:{gid}", "--userns=keep-id"]
+    if _podman("container", "exists", NAME, check=False).returncode != 0:
+        with _locked_keys():
+            pass  # renders the config with the current (normally empty) key list
+        _podman("run", "-d", "--name", NAME, *user, "--network", "podman", "--network", GW_NET,
+                "-p", f"127.0.0.1:{HOST_PORT}:4000",
+                "-v", f"{STATE / 'config.yaml'}:/config.yaml:Z", "-v", f"{STATE / 'data'}:/data:Z",
+                IMAGE, "-f", "/config.yaml")
+    if _podman("container", "exists", FRONT, check=False).returncode != 0:
+        _podman("run", "-d", "--name", FRONT, *user, "--network", INTERNAL_NET, "--network", GW_NET,
+                "-e", f"UPSTREAM=http://{NAME}:4000", "-e", "SECRETS_FILE=/redact.txt",
+                "-v", f"{REDACT}:/redact.txt:ro,Z", "-v", f"{FRONT_SCRIPT}:/front_filter.py:ro,Z",
+                "--entrypoint", "python3", FRONT_IMAGE, "/front_filter.py")
 
 
 def down() -> None:
-    _podman("rm", "-f", "-t", "5", NAME, check=False)
+    for name in (FRONT, NAME):  # one call each: podman refuses the whole batch if one name does not exist
+        _podman("rm", "-f", "-t", "5", name, check=False)
 
 
 def _probe(key: str) -> int:
