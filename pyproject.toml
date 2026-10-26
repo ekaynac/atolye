@@ -1,0 +1,19 @@
+[project]
+name = "atolye"
+version = "0.1.0"
+description = "OpenHands-centred stack for unattended development with local models and verifiable results"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    # Pinned: upstream ships about one release every 2.5 days (R19: pin, few patches, upstream-first).
+    # openhands-sdk 1.58.2 constrains litellm <1.106, which excludes the compromised litellm 1.107.0 (2026-10-21).
+    "openhands-sdk==1.58.2",
+    "openhands-tools==1.58.2",
+]
+
+[project.scripts]
+atolye-run = "atolye.run_item:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
