@@ -12,6 +12,6 @@ When `allow_prefix` is true, `Choice.convert()` resolves a value like this. Matc
 
 Shell completion, help and metavar output, and the existing error messages stay as they are. This works the same for options, arguments and `multiple=True` options, since they all convert through `Choice.convert()`. Update any existing tests the change affects, and add an entry to `CHANGES.md`.
 
-Do not change test configuration or lockfiles (`conftest.py` files, `pytest.ini`, and lockfiles): the evaluation refuses a change that touches them.
+Where changes may go: `src/click/`, `tests/`, `docs/` and `CHANGES.md`. The evaluation refuses the whole change if it touches anything else (for example `pyproject.toml`), or any `conftest.py`, `pytest.ini`, lockfile, `sitecustomize.py` or a module named `pytest`, even inside those directories.
 
 Environment: the test dependencies are preinstalled and the package itself is not installed, so run the tests from the repository root with `PYTHONPATH=src python -m pytest`.

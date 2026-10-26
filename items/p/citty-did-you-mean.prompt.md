@@ -11,6 +11,6 @@ How the suggestion is chosen, among the sub commands of the command whose sub co
 
 Examples, with sub commands `build`, `dev` and `deploy`: `bild` -> `build`; `BUILD` -> `build`; `biuld` -> `build`; `xyz` -> no suggestion.
 
-Do not change test configuration or lockfiles (`vitest.config.*`, `jest.config.*`, `pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`): the evaluation refuses a change that touches them.
+Where changes may go: `src/`, `test/`, `README.md` and `CHANGELOG.md`. The evaluation refuses the whole change if it touches anything else, or any `conftest`/test-runner/build configuration (`vitest.config.*`, `tsconfig*.json`, `package.json`) or lockfile, even inside those directories.
 
 Environment: the dev dependencies are preinstalled in `/node_modules` (Node resolves them from the repository). Run the tests from the repository root with `/node_modules/.bin/vitest run`.

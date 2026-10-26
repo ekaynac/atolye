@@ -37,5 +37,14 @@ class RedactorTest(unittest.TestCase):
         self.assertEqual(ff.secret_forms(["", "abc", "1234567"]), [])
 
 
+class RequestTargetTest(unittest.TestCase):
+    def test_only_exact_origin_form_paths_pass(self):
+        self.assertEqual(ff.checked_path("/v1/chat/completions"), "/v1/chat/completions")
+        for target in ("/v1/chat/completions/x", "/v1/modelsX", "/v1/responses/../../files",
+                       "http://upstream/v1/chat/completions", "/v1/chat/completions?q=1", "/v1//models",
+                       "/v1/%2e%2e/admin", "/v1/models#x", "/admin"):
+            self.assertIsNone(ff.checked_path(target), target)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@
   "referee": {
     "image": "localhost/atolye-p-vitesse-recent-names:base",
     "private": true,
+    "allowed_paths": ["src/*", "test/*", "README.md", "auto-imports.d.ts", "components.d.ts"],
     "acceptance_dir": "vitesse-recent-names/acceptance",
     "test_cmd": [
       "sh",

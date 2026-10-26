@@ -9,6 +9,7 @@
   "referee": {
     "image": "localhost/atolye-p-citty-did-you-mean:base",
     "private": true,
+    "allowed_paths": ["src/*", "test/*", "README.md", "CHANGELOG.md"],
     "acceptance_dir": "citty-did-you-mean/acceptance",
     "test_cmd": [
       "/node_modules/.bin/vitest",

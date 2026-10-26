@@ -9,6 +9,7 @@
   "referee": {
     "image": "localhost/atolye-p-humanize-parse-size:base",
     "private": true,
+    "allowed_paths": ["src/humanize/*", "tests/*", "docs/*", "README.md"],
     "acceptance_dir": "humanize-parse-size/acceptance",
     "test_cmd": [
       "sh",

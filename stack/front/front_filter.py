@@ -14,6 +14,8 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import select
+import socket
 import sys
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -75,11 +77,29 @@ class Redactor:
         return data
 
 
-SECRET_FORMS = _load_secret_forms()
+_forms_cache: tuple[float, list[bytes]] = (-1.0, [])
+
+
+def current_secret_forms() -> list[bytes]:
+    """The secrets file is re-read when it changes, so a key added later is redacted without a restart."""
+    global _forms_cache
+    path = os.environ.get("SECRETS_FILE")
+    mtime = os.stat(path).st_mtime if path and os.path.exists(path) else 0.0
+    if mtime != _forms_cache[0]:
+        _forms_cache = (mtime, _load_secret_forms())
+    return _forms_cache[1]
+
+
+def checked_path(target: str) -> str | None:
+    """The exact allowed path for a request target, or None. Only origin-form targets, no query, no encoding tricks."""
+    if not target.startswith("/") or any(s in target for s in ("%", "\\", "//", "/.", "?", "#")):
+        return None
+    return target if target in PATHS else None
 
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"  # close-delimited bodies: streaming without chunked framing
+    timeout = 120  # seconds a client may take to send its request
 
     def _refuse(self, code: int, reason: str) -> None:
         body = json.dumps({"error": {"message": reason, "type": "atolye_front_filter"}}).encode()
@@ -89,14 +109,41 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _client_gone(self) -> bool:
+        try:
+            return self.connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+        except BlockingIOError:
+            return False
+        except OSError:
+            return True
+
+    def _wait_for_upstream(self, conn: http.client.HTTPConnection) -> bool:
+        """Wait until the upstream answers; False if the client went away first (then the upstream is dropped,
+        so the model server can abort the generation instead of finishing it for nobody)."""
+        while True:
+            ready, _, _ = select.select([conn.sock, self.connection], [], [], 5)
+            if conn.sock in ready:
+                return True
+            if self.connection in ready and self._client_gone():
+                return False
+
     def _proxy(self, method: str) -> None:
-        path = urllib.parse.urlsplit(self.path).path
-        if not path.startswith(PATHS):
+        path = checked_path(self.path)
+        if path is None:
             return self._refuse(404, "path not allowed")
-        length = int(self.headers.get("content-length") or 0)
+        if self.headers.get("transfer-encoding"):
+            return self._refuse(411, "send a content-length, not a transfer-encoding")
+        try:
+            length = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            return self._refuse(400, "bad content-length")
+        if length < 0:
+            return self._refuse(400, "bad content-length")
         if length > MAX_BODY:
             return self._refuse(413, "request too large")
         body = self.rfile.read(length) if length else None
+        if body is not None and len(body) != length:
+            return self._refuse(400, "request body shorter than its content-length")
         headers = {h: v for h in REQUEST_HEADERS if (v := self.headers.get(h)) is not None}
         headers["accept-encoding"] = "identity"  # plaintext responses, so redaction can see them
         if body is not None:
@@ -104,7 +151,10 @@ class Handler(BaseHTTPRequestHandler):
         conn = http.client.HTTPConnection(UPSTREAM.hostname, UPSTREAM.port or 80, timeout=900)
         started = False
         try:
-            conn.request(method, self.path, body=body, headers=headers)
+            conn.request(method, path, body=body, headers=headers)
+            if not self._wait_for_upstream(conn):
+                print(json.dumps({"event": "client_gone", "path": path}), file=sys.stderr, flush=True)
+                return
             resp = conn.getresponse()
             self.send_response(resp.status)
             for h in RESPONSE_HEADERS:
@@ -112,17 +162,20 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header(h, v)
             self.end_headers()
             started = True
-            red = Redactor(SECRET_FORMS)
+            red = Redactor(current_secret_forms())
             while chunk := resp.read1(65536):
                 if out := red.feed(chunk):
-                    self.wfile.write(out)
+                    self.wfile.write(out)  # raises if the client went away; the upstream is then dropped
                     self.wfile.flush()
             self.wfile.write(red.flush())
             if red.count:
                 print(json.dumps({"event": "redacted", "path": path, "count": red.count}), file=sys.stderr, flush=True)
-        except (ConnectionError, TimeoutError, http.client.HTTPException) as exc:
+        except (OSError, http.client.HTTPException) as exc:
             if not started:  # after the status line, the only honest signal left is closing the stream
-                self._refuse(502, f"upstream error: {type(exc).__name__}")
+                try:
+                    self._refuse(502, f"upstream error: {type(exc).__name__}")
+                except OSError:
+                    pass  # the client is gone too
         finally:
             conn.close()
 
