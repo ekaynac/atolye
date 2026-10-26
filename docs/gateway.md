@@ -41,6 +41,15 @@ flowchart LR
 | 6 | Per-job key accepted / revoked quickly | pass (0.31 s / 0.31 s) | pass (0.41 s / 0.31 s) |
 | 7 | Overhead at 8 concurrent requests | pass | pass (median 2.82 s vs 2.80 s direct) |
 | 8 | Runs on arm64 | pass | pass |
+| 9 | Malformed requests refused (path variants, absolute-form target, query, encoded `..`, `Content-Length: -1`) | n/a | pass (all 404/400), added after the independent review |
+
+**After the independent review (PR #4):**
+- The filter matches paths exactly and forwards only the checked path.
+- It refuses bad framing, drops the upstream request when the client disconnects, and re-reads the secrets file
+  when it changes.
+- `up()` restarts stopped containers and probes through the filter.
+- Job keys carry an expiry, and usage is read until it settles.
+- Replies the gateway makes itself (its own 400/403/404) carry no job id, so `gw_errors` does not count them.
 
 ## Upstream contributions: assessment (operator rule: contribute only what is generally meaningful)
 
