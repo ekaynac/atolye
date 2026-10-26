@@ -1,0 +1,21 @@
+{
+  "id": "citty-did-you-mean",
+  "set": "P",
+  "language": "typescript",
+  "repo": "https://github.com/unjs/citty.git",
+  "base": "3e342fe7b3f67575faf51df8361d502be6fe32e8",
+  "agent_image": "localhost/atolye-p-citty-did-you-mean:base",
+  "prompt_file": "citty-did-you-mean.prompt.md",
+  "referee": {
+    "image": "localhost/atolye-p-citty-did-you-mean:base",
+    "private": true,
+    "acceptance_dir": "citty-did-you-mean/acceptance",
+    "test_cmd": [
+      "/node_modules/.bin/vitest",
+      "run",
+      "acceptance_hidden/"
+    ],
+    "timeout_s": 300
+  },
+  "notes": "Invented feature (no upstream issue or PR at base). Author notes and effort estimate are in the private acceptance store until the comparison ends."
+}

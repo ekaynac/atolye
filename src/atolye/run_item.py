@@ -91,6 +91,8 @@ def _converse(item: dict, image: str, project: Path, llm: LLM, network: str | No
 def run(item_path: Path, out: Path, model: str | None, direct: bool, max_iterations: int, timeout_s: float) -> dict:
     item = json.loads(item_path.read_text())
     root = item_path.parent
+    if "prompt_file" in item:  # the agent receives only this text (protocol: no other item field reaches any arm)
+        item["prompt"] = (root / item["prompt_file"]).read_text()
     work = Path(tempfile.mkdtemp(prefix=f"atolye-{item['id']}-"))
     if "fixture_dir" in item:  # a plain directory becomes a one-commit repository
         origin = work / "origin"
