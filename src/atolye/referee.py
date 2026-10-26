@@ -26,7 +26,12 @@ def _touched(patch_file: Path) -> list[str]:
 
 def referee(item: dict, root: Path, repo: str, base_sha: str, patch_file: Path) -> dict:
     spec = item["referee"]
-    acc_dir = (root / spec["acceptance_dir"]).resolve()
+    # Measured items keep their hidden acceptance outside this public repository (R28): `"private": true`
+    # resolves `acceptance_dir` under $ATOLYE_ACCEPTANCE.
+    acc_root = Path(os.environ.get("ATOLYE_ACCEPTANCE", "")) if spec.get("private") else root
+    acc_dir = (acc_root / spec["acceptance_dir"]).resolve()
+    if not acc_dir.is_dir():
+        raise FileNotFoundError(f"acceptance directory not found: {acc_dir}")
     hidden = [p.relative_to(acc_dir).as_posix() for p in acc_dir.rglob("*") if p.is_file()]
     if patch_file.stat().st_size == 0:
         return {"verdict": "failed", "reason": "empty patch"}

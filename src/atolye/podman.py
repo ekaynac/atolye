@@ -26,6 +26,7 @@ class ServerSpec:
     image: str
     project_dir: Path
     env: dict[str, str] = field(default_factory=dict)
+    network: str | None = None  # e.g. the internal network where only the model gateway is reachable
     health_timeout_s: float = 120.0
 
 
@@ -73,6 +74,7 @@ def agent_server(spec: ServerSpec) -> Iterator[RemoteWorkspace]:
         "--pids-limit", "1024",
         "--memory", "8g",
         "-p", f"127.0.0.1:{port}:{CONTAINER_PORT}",
+        *(["--network", spec.network] if spec.network else []),
         "-e", f"OH_SESSION_API_KEYS_0={key}",
         *env_flags,
         "-v", f"{spec.project_dir}:{WORKDIR}:Z",

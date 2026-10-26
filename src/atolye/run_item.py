@@ -19,6 +19,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Conversation
 from openhands.tools.preset.default import get_default_agent
 
+from atolye import gateway
 from atolye.podman import ServerSpec, agent_server, remove_tree
 from atolye.referee import referee
 
@@ -61,7 +62,33 @@ def _last_agent_event(events) -> str:
     return "none"
 
 
-def run(item_path: Path, out: Path, model: str, base_url: str, max_iterations: int, timeout_s: float) -> dict:
+def _converse(item: dict, image: str, project: Path, llm: LLM, network: str | None, max_iterations: int,
+              timeout_s: float, record: dict) -> None:
+    with agent_server(ServerSpec(image=image, project_dir=project, network=network)) as ws:
+        conv = Conversation(agent=get_default_agent(llm=llm, cli_mode=True), workspace=ws,
+                            max_iteration_per_run=max_iterations)
+        try:
+            conv.send_message(item["prompt"])
+            try:
+                conv.run(timeout=timeout_s)
+                record["stop"] = str(conv.state.execution_status)
+            except Exception as exc:  # a timeout or server error is a recorded outcome, not a crash
+                record["stop"] = f"error: {type(exc).__name__}: {exc}"[:300]
+            m = conv.conversation_stats.get_combined_metrics()
+            u = m.accumulated_token_usage
+            record.update(
+                llm_calls=len(m.response_latencies),
+                prompt_tokens=u.prompt_tokens if u else 0,
+                completion_tokens=u.completion_tokens if u else 0,
+                cache_read_tokens=u.cache_read_tokens if u else 0,
+                cost_usd_reported=m.accumulated_cost,
+                last_agent_event=_last_agent_event(conv.state.events),
+            )
+        finally:
+            conv.close()
+
+
+def run(item_path: Path, out: Path, model: str | None, direct: bool, max_iterations: int, timeout_s: float) -> dict:
     item = json.loads(item_path.read_text())
     root = item_path.parent
     work = Path(tempfile.mkdtemp(prefix=f"atolye-{item['id']}-"))
@@ -75,42 +102,38 @@ def run(item_path: Path, out: Path, model: str, base_url: str, max_iterations: i
     else:
         repo = item["repo"] if "://" in item["repo"] else str((root / item["repo"]).resolve())
     project = work / "project"
+    # An item may name a prepared image (agent-server base + the repository's dependencies at its base commit),
+    # so the agent and the referee see the same toolchain.
+    image = item.get("agent_image", AGENT_IMAGE)
+    started = datetime.now(timezone.utc)
+    job = f"{item['id']}-{started.strftime('%Y%m%dT%H%M%SZ')}"
     record: dict = {
         "arm": "C-openhands",
         "item": item["id"],
-        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "model": model,
-        "agent_image": AGENT_IMAGE,
-        "agent_image_digest": _image_digest(AGENT_IMAGE),
+        "job": job,
+        "started_at": started.isoformat(timespec="seconds"),
+        "route": "direct" if direct else "gateway",
+        "agent_image": image,
+        "agent_image_digest": _image_digest(image),
         "max_iterations": max_iterations,
     }
     try:
         record["base"] = base_sha = _checkout(repo, item["base"], project)
-        llm = LLM(usage_id="builder", model=model, base_url=base_url, api_key=SecretStr("local-no-key"),
-                  num_retries=2)
         t0 = time.monotonic()
-        with agent_server(ServerSpec(image=AGENT_IMAGE, project_dir=project)) as ws:
-            conv = Conversation(agent=get_default_agent(llm=llm, cli_mode=True), workspace=ws,
-                                max_iteration_per_run=max_iterations)
-            try:
-                conv.send_message(item["prompt"])
-                try:
-                    conv.run(timeout=timeout_s)
-                    record["stop"] = str(conv.state.execution_status)
-                except Exception as exc:  # a timeout or server error is a recorded outcome, not a crash
-                    record["stop"] = f"error: {type(exc).__name__}: {exc}"[:300]
-                m = conv.conversation_stats.get_combined_metrics()
-                u = m.accumulated_token_usage
-                record.update(
-                    llm_calls=len(m.response_latencies),
-                    prompt_tokens=u.prompt_tokens if u else 0,
-                    completion_tokens=u.completion_tokens if u else 0,
-                    cache_read_tokens=u.cache_read_tokens if u else 0,
-                    cost_usd_reported=m.accumulated_cost,
-                    last_agent_event=_last_agent_event(conv.state.events),
-                )
-            finally:
-                conv.close()
+        if direct:  # debugging only: the sandbox reaches vLLM itself and nothing is counted outside the SDK
+            record["model"] = model or LOCAL_MODEL
+            llm = LLM(usage_id="builder", model=record["model"], base_url=LOCAL_BASE_URL,
+                      api_key=SecretStr("local-no-key"), num_retries=2)
+            _converse(item, image, project, llm, None, max_iterations, timeout_s, record)
+        else:  # measured runs: internal network, per-job key, usage counted at the gateway
+            gw_model = model or gateway.DEFAULT_MODEL
+            record["model"] = gw_model
+            gateway.up()
+            with gateway.job_key(job, [gw_model]) as key:
+                llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
+                          api_key=SecretStr(key), num_retries=2)
+                _converse(item, image, project, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record)
+            record.update(gateway.usage(job, started))
         record["wall_s"] = round(time.monotonic() - t0, 1)
         patch = _patch_against(base_sha, project)
         patch_file = out.parent / f"{item['id']}-{record['started_at'].replace(':', '')}.patch"
@@ -129,13 +152,13 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="atolye-run")
     p.add_argument("item", type=Path)
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--model", default=LOCAL_MODEL)
-    p.add_argument("--base-url", default=LOCAL_BASE_URL)
+    p.add_argument("--model", default=None, help="gateway model name (default: the gateway's local model)")
+    p.add_argument("--direct", action="store_true", help="debug only: bypass the gateway")
     p.add_argument("--max-iterations", type=int, default=60)
     p.add_argument("--timeout", type=float, default=1800)
     a = p.parse_args()
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    print(json.dumps(run(a.item.resolve(), a.out.resolve(), a.model, a.base_url, a.max_iterations, a.timeout),
+    print(json.dumps(run(a.item.resolve(), a.out.resolve(), a.model, a.direct, a.max_iterations, a.timeout),
                      indent=2))
 
 
