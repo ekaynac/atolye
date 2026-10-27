@@ -14,12 +14,14 @@ import secrets
 import subprocess
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation
+from openhands.sdk.mcp.config import MCPBearerAuthCredential, MCPServer
 from openhands.tools.preset.default import get_default_agent
 
 from atolye import gateway, vllm_metrics
@@ -34,6 +36,10 @@ DEFAULT_TIMEOUT_S = 3600
 # The same task wrapper as adc-dev's T1-cloud OpenHands cells (stage-2 coordination §6.6), so local and cloud cells
 # get the same prompt.
 OPENHANDS_PREFIX = "The repository is at /workspace. Work only inside it."
+# T3 only: the one line that tells the agent the memory exists; the tools describe themselves.
+MEMORY_HINT = ("The project's design documents and decision log are in a library you can query with the "
+               "search_library and open_citation tools.")
+KUTUPHANE_TOOLS = ("search_library", "open_citation", "ask_library", "read_document", "list_books")
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -108,11 +114,34 @@ def _last_agent_event(events) -> str:
     return "none"
 
 
+def _memory_calls(events) -> int:
+    """Agent actions that called a Kütüphane tool (the SDK may prefix MCP tool names with the server name)."""
+    return sum(1 for ev in events if getattr(ev, "source", None) == "agent"
+               and str(getattr(ev, "tool_name", "") or "").endswith(KUTUPHANE_TOOLS))
+
+
+@dataclass(frozen=True)
+class Memory:
+    """Kütüphane over MCP for the OpenHands agent (stage-2 T3): one scoped, read-only agent token."""
+
+    url: str
+    token_file: Path
+    book: str
+    commit: str
+
+    def server(self) -> MCPServer:
+        return MCPServer(url=self.url, transport="http", auth=MCPBearerAuthCredential(
+            strategy="bearer", value=SecretStr(self.token_file.read_text().strip())))
+
+
 def _converse(prompt: str, image: str, project: Path, env: dict[str, str], llm: LLM, network: str | None,
-              max_iterations: int, timeout_s: float, record: dict) -> None:
+              max_iterations: int, timeout_s: float, record: dict, memory: Memory | None = None,
+              trajectory: Path | None = None) -> None:
+    agent = get_default_agent(llm=llm, cli_mode=True)
+    if memory:
+        agent = agent.model_copy(update={"mcp_config": {"kutuphane": memory.server()}})
     with agent_server(ServerSpec(image=image, project_dir=project, env=env, network=network)) as ws:
-        conv = Conversation(agent=get_default_agent(llm=llm, cli_mode=True), workspace=ws,
-                            max_iteration_per_run=max_iterations)
+        conv = Conversation(agent=agent, workspace=ws, max_iteration_per_run=max_iterations)
         try:
             conv.send_message(prompt)
             try:
@@ -129,13 +158,20 @@ def _converse(prompt: str, image: str, project: Path, env: dict[str, str], llm: 
                 cache_read_tokens=u.cache_read_tokens if u else 0,
                 cost_usd_reported=m.accumulated_cost,
                 last_agent_event=_last_agent_event(conv.state.events),
+                memory_calls=_memory_calls(conv.state.events) if memory else 0,
             )
+            if trajectory:  # the events only: the agent config (with the MCP bearer token) is not written
+                with trajectory.open("w") as f:
+                    for ev in conv.state.events:
+                        f.write(json.dumps(ev.model_dump(mode="json")) + "\n")
         finally:
             conv.close()
 
 
 def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeout_s: float,
-        worker: str = "openhands", repeat: int = 0) -> dict:
+        worker: str = "openhands", repeat: int = 0, memory: Memory | None = None) -> dict:
+    if memory and worker != "openhands":
+        raise ValueError("memory (Kütüphane MCP) needs the OpenHands worker; mini-swe-agent has no MCP client")
     item_file = item_dir / "item.json"
     item = json.loads(item_file.read_text())
     prompt = (item_dir / "requirement.md").read_text()
@@ -146,7 +182,7 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
     job = f"{item_dir.name}-{started.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}"
     gw_model = model or gateway.DEFAULT_MODEL
     record: dict = {
-        "arm": "C-openhands" if worker == "openhands" else f"C-{worker}",
+        "arm": ("C-openhands+kutuphane" if memory else "C-openhands") if worker == "openhands" else f"C-{worker}",
         "worker": worker,
         "item": item_dir.name,
         "job": job,
@@ -156,6 +192,7 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
         "item_image": item["image"],
         "max_iterations": max_iterations,
         "timeout_s": timeout_s,
+        "memory": {"url": memory.url, "book": memory.book, "kutuphane_commit": memory.commit} if memory else None,
     }
     env = {**_leading_env(item.get("setup")), **_leading_env(item["test_command"])}
     record["agent_env"] = env
@@ -187,10 +224,12 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
                     submission.unlink()
             else:  # OpenHands: the sandbox reaches only the front filter
                 llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
-                          api_key=SecretStr(key), num_retries=2)
-                record["prompt_version"] = "t1-cloud-prefix"
-                _converse(f"{OPENHANDS_PREFIX}\n\n{prompt}", image, project, env, llm, gateway.INTERNAL_NET,
-                          max_iterations, timeout_s, record)
+                          api_key=SecretStr(key), num_retries=2 if gw_model == gateway.DEFAULT_MODEL else 0)
+                record["prompt_version"] = "t1-cloud-prefix" + ("+memory-hint" if memory else "")
+                task = f"{OPENHANDS_PREFIX}\n\n{MEMORY_HINT}\n\n{prompt}" if memory else f"{OPENHANDS_PREFIX}\n\n{prompt}"
+                record["trajectory"] = str(out.parent / f"{job}.events.jsonl")
+                _converse(task, image, project, env, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record,
+                          memory, Path(record["trajectory"]))
             record["wall_s"] = round(time.monotonic() - t0, 1)
         record.update(gateway.usage(job, started))
         if gw_model == gateway.DEFAULT_MODEL:  # the local vLLM route: read its prefix-cache counters
@@ -216,10 +255,26 @@ def main() -> None:
                    help="openhands (arm C) or mini (mini-swe-agent, T1's second worker)")
     p.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    add_memory_args(p)
     a = p.parse_args()
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    print(json.dumps(run(a.item.resolve(), a.out.resolve(), a.model, a.max_iterations, a.timeout, a.worker),
-                     indent=2))
+    print(json.dumps(run(a.item.resolve(), a.out.resolve(), a.model, a.max_iterations, a.timeout, a.worker,
+                         memory=memory_from_args(a)), indent=2))
+
+
+def add_memory_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--memory-url", help="Kütüphane MCP URL as the sandbox sees it (enables the memory; T3)")
+    p.add_argument("--memory-token-file", type=Path, help="file holding the scoped agent token (never printed)")
+    p.add_argument("--memory-book", help="the one book the token may read (recorded)")
+    p.add_argument("--memory-commit", help="the pinned Kütüphane commit (recorded)")
+
+
+def memory_from_args(a: argparse.Namespace) -> Memory | None:
+    if not a.memory_url:
+        return None
+    if not (a.memory_token_file and a.memory_book and a.memory_commit):
+        raise SystemExit("--memory-url needs --memory-token-file, --memory-book and --memory-commit")
+    return Memory(a.memory_url, a.memory_token_file, a.memory_book, a.memory_commit)
 
 
 if __name__ == "__main__":

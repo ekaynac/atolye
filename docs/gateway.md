@@ -29,6 +29,17 @@ flowchart LR
 - a JSON access log with job id and cache fields;
 - the admin and stats listeners on the container's loopback (`statsAddr`).
 
+**Cloud routes** (`stack/gateway/cloud-*.yaml`, `atolye.gateway.CLOUD_ROUTES`):
+- A route is rendered into the live config only while its key file exists in `$ATOLYE_SECRETS` (default
+  `/home/mega/atolye-acceptance/secrets`, private).
+- That directory is mounted read-only into the gateway at `/secrets`. agentgateway reads the key from the file
+  (`auth.key.value.file`), so the key is never in the rendered config.
+- `gateway.up()` copies every active key to the front filter's redaction list. Deleting the key file and running
+  `restart` removes both the route and the redaction entry.
+- `gw_quota_errors` counts 401/402/403/429 per job. `atolye-campaign` stops at the first one: a provider refusal is
+  never retried in a loop.
+- Today: `deepseek-v4.1-flash` on Ollama Cloud (`https://ollama.com/v1`), for T3.
+
 ## T2 results (2026-10-26, `bench/t2/run_checks.py`)
 
 | # | Check | agentgateway alone (`T2_DIRECT_GW=1`) | front filter + agentgateway |

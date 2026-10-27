@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import secrets
 import subprocess
 import time
@@ -39,18 +40,36 @@ FRONT_SCRIPT = REPO / "stack" / "front" / "front_filter.py"
 STATE = REPO / "runs" / "gw"
 KEYS = STATE / "keys.json"
 REDACT = STATE / "redact.txt"  # provider secrets the front filter must never let through (one per line)
+# Cloud routes: a route is rendered only while its key file exists in SECRETS (mounted read-only at /secrets).
+SECRETS = Path(os.environ.get("ATOLYE_SECRETS", "/home/mega/atolye-acceptance/secrets"))
+QUOTA_STATUSES = {401, 402, 403, 429}  # a cloud provider's auth or quota refusal: a campaign stops, never retries
+CLOUD_ROUTES = {"ollama-cloud.key": REPO / "stack" / "gateway" / "cloud-ollama.yaml"}
 
 
 def _podman(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(["podman", *args], capture_output=True, text=True, check=check)
 
 
+def _active_routes() -> list[str]:
+    return [key for key in CLOUD_ROUTES if (SECRETS / key).is_file()]
+
+
+def _sync_redaction() -> None:
+    """Every active provider key is on the front filter's redaction list. The values are copied, never printed."""
+    values = [(SECRETS / key).read_text().strip() for key in _active_routes()]
+    REDACT.write_text("".join(f"{v}\n" for v in values if v))
+    REDACT.chmod(0o600)
+
+
 def _render(keys: list[dict]) -> None:
-    """Write the live config: the template with the current key list (JSON is valid YAML).
+    """Write the live config: the template with the current key list (JSON is valid YAML), plus the active cloud
+    routes (appended to the model list, the template's last block).
 
     Written in place, not renamed: the container watches this exact inode through a bind mount.
     """
     text = TEMPLATE.read_text().replace("      keys: []", f"      keys: {json.dumps(keys)}")
+    for key in _active_routes():
+        text = text.rstrip("\n") + "\n" + CLOUD_ROUTES[key].read_text()
     (STATE / "config.yaml").write_text(text)
 
 
@@ -81,7 +100,7 @@ def up() -> None:
         if _podman("network", "exists", net, check=False).returncode != 0:
             _podman("network", "create", *flags, net)
     (STATE / "data").mkdir(parents=True, exist_ok=True)
-    REDACT.touch(exist_ok=True)
+    _sync_redaction()
     uid = subprocess.run(["id", "-u"], capture_output=True, text=True).stdout.strip()
     gid = subprocess.run(["id", "-g"], capture_output=True, text=True).stdout.strip()
     user = ["--user", f"{uid}:{gid}", "--userns=keep-id"]
@@ -89,8 +108,9 @@ def up() -> None:
         pass  # renders the config, dropping expired keys
     state = _running(NAME)
     if state is None:
+        secrets_mount = ["-v", f"{SECRETS}:/secrets:ro,z"] if SECRETS.is_dir() else []
         _podman("run", "-d", "--name", NAME, *user, "--network", "podman", "--network", GW_NET,
-                "-p", f"127.0.0.1:{HOST_PORT}:4000",
+                "-p", f"127.0.0.1:{HOST_PORT}:4000", *secrets_mount,
                 "-v", f"{STATE / 'config.yaml'}:/config.yaml:Z", "-v", f"{STATE / 'data'}:/data:Z",
                 IMAGE, "-f", "/config.yaml")
     elif not state:
@@ -144,7 +164,7 @@ def job_key(job: str, models: list[str], ttl_s: float = 7200, ready_timeout_s: f
 
 def _read_usage(job: str, since: datetime) -> dict:
     logs = _podman("logs", "--since", since.astimezone(timezone.utc).isoformat(), NAME, check=False)
-    totals = {"gw_requests": 0, "gw_errors": 0, "gw_input_tokens": 0, "gw_output_tokens": 0,
+    totals = {"gw_requests": 0, "gw_errors": 0, "gw_quota_errors": 0, "gw_input_tokens": 0, "gw_output_tokens": 0,
               "gw_cached_input_tokens": 0}
     for line in (logs.stdout + logs.stderr).splitlines():
         if '"job"' not in line:
@@ -156,8 +176,11 @@ def _read_usage(job: str, since: datetime) -> dict:
         if rec.get("job") != job:
             continue
         totals["gw_requests"] += 1
-        if int(rec.get("http.status", 0)) >= 400:
+        status = int(rec.get("http.status", 0))
+        if status >= 400:
             totals["gw_errors"] += 1
+        if status in QUOTA_STATUSES:
+            totals["gw_quota_errors"] += 1
         totals["gw_input_tokens"] += int(rec.get("gen_ai.usage.input_tokens") or 0)
         totals["gw_output_tokens"] += int(rec.get("gen_ai.usage.output_tokens") or 0)
         totals["gw_cached_input_tokens"] += int(rec.get("cached_input_tokens") or 0)

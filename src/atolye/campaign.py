@@ -17,7 +17,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from atolye.run_item import DEFAULT_MAX_ITERATIONS, DEFAULT_TIMEOUT_S, run
+from atolye import gateway
+from atolye.run_item import DEFAULT_MAX_ITERATIONS, DEFAULT_TIMEOUT_S, add_memory_args, memory_from_args, run
 
 MARKER = Path("/home/mega/adc-research/GPU-NOW")
 STOP = Path("/home/mega/adc-research/GPU-STOP")  # any session or the operator creates it to stop at a cell boundary
@@ -30,7 +31,7 @@ def _done(out: Path) -> set[tuple[str, str, int]]:
         return set()
     recs = [json.loads(line) for line in out.read_text().splitlines() if line.strip()]
     return {(r["item"], r["worker"], int(r.get("repeat", 0))) for r in recs
-            if not str(r.get("stop", "")).startswith("infra_error")}
+            if not str(r.get("stop", "")).startswith("infra_error") and not r.get("gw_quota_errors")}
 
 
 def main() -> None:
@@ -43,15 +44,21 @@ def main() -> None:
     p.add_argument("--wait", action="store_true", help="wait until the marker is free instead of refusing")
     p.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    p.add_argument("--model", default=None,
+                   help="gateway model name; a cloud model does not take the GPU marker (default: the local model)")
+    add_memory_args(p)
     a = p.parse_args()
+    memory = memory_from_args(a)
     a.out = a.out.resolve()
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    if a.wait:  # wait for the session before us in the GPU order to remove its line
-        while MARKER.exists() and not MARKER.read_text().startswith(SESSION + " "):
-            time.sleep(60)
-    if MARKER.exists() and not MARKER.read_text().startswith(SESSION + " "):
-        sys.exit(f"the GPU is in use: {MARKER} says {MARKER.read_text().strip()!r}")
-    MARKER.write_text(f"{SESSION} {a.job} {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
+    gpu = a.model in (None, gateway.DEFAULT_MODEL)
+    if gpu:
+        if a.wait:  # wait for the session before us in the GPU order to remove its line
+            while MARKER.exists() and not MARKER.read_text().startswith(SESSION + " "):
+                time.sleep(60)
+        if MARKER.exists() and not MARKER.read_text().startswith(SESSION + " "):
+            sys.exit(f"the GPU is in use: {MARKER} says {MARKER.read_text().strip()!r}")
+        MARKER.write_text(f"{SESSION} {a.job} {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     try:
         done = _done(a.out)
         for repeat in range(a.repeats):  # repeat-major: every cell once before any cell twice
@@ -59,12 +66,13 @@ def main() -> None:
                 for worker in a.workers:
                     if (item.name, worker, repeat) in done:
                         continue
-                    if STOP.exists():  # e.g. the training resumes: stop at this cell boundary
+                    if gpu and STOP.exists():  # e.g. the training resumes: stop at this cell boundary
                         print(f"[{datetime.now():%H:%M}] stopping: {STOP} exists", flush=True)
                         return
                     print(f"[{datetime.now():%H:%M}] {item.name} {worker} repeat {repeat}", flush=True)
                     try:
-                        rec = run(item.resolve(), a.out, None, a.max_iterations, a.timeout, worker, repeat=repeat)
+                        rec = run(item.resolve(), a.out, a.model, a.max_iterations, a.timeout, worker, repeat=repeat,
+                                  memory=memory)
                     except Exception as exc:  # infrastructure (setup, podman, referee binary): record it, go on
                         rec = {"arm": f"C-{worker}", "worker": worker, "item": item.name, "repeat": repeat,
                                "stop": f"infra_error: {type(exc).__name__}: {exc}"[:500],
@@ -72,8 +80,12 @@ def main() -> None:
                         with a.out.open("a") as f:
                             f.write(json.dumps(rec) + "\n")
                     print(f"  -> {rec.get('referee', {}).get('verdict')} in {rec.get('wall_s')} s", flush=True)
+                    if rec.get("gw_quota_errors"):  # a provider's auth or quota refusal: stop, never retry in a loop
+                        print(f"[{datetime.now():%H:%M}] stopping: the provider refused "
+                              f"({rec['gw_quota_errors']} auth/quota errors)", flush=True)
+                        return
     finally:
-        if MARKER.exists() and MARKER.read_text().startswith(SESSION + " "):
+        if gpu and MARKER.exists() and MARKER.read_text().startswith(SESSION + " "):
             MARKER.unlink()
 
 
