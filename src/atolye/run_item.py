@@ -1,6 +1,9 @@
-"""Run one item headless with OpenHands and append one metrics line.
+"""Run one item headless and append one record line.
 
-Usage: atolye-run ITEM.json --out runs.jsonl [--model M] [--base-url URL] [--max-iterations N] [--timeout S]
+An item is a directory: `item.json` (a P-A referee item: repo, base, image, optional setup, tests, hidden acceptance)
+and `requirement.md`, the only text the agent receives (protocol: no other item field reaches any arm).
+
+Usage: atolye-run ITEM_DIR --out runs.jsonl [--worker openhands|mini] [--model M] [--max-iterations N] [--timeout S]
 """
 
 from __future__ import annotations
@@ -8,7 +11,6 @@ from __future__ import annotations
 import argparse
 import json
 import secrets
-import shutil
 import subprocess
 import tempfile
 import time
@@ -21,12 +23,14 @@ from openhands.sdk import LLM, Conversation
 from openhands.tools.preset.default import get_default_agent
 
 from atolye import gateway, vllm_metrics
-from atolye.podman import ServerSpec, agent_server, remove_tree
-from atolye.referee import acceptance_dir, referee
+from atolye.podman import ServerSpec, agent_image, agent_server, remove_tree, run_setup
+from atolye.referee import binary as referee_binary
+from atolye.referee import referee
 
-AGENT_IMAGE = "ghcr.io/openhands/agent-server:1.58.2-python"  # matches the pinned SDK; digest goes in the run record
-LOCAL_MODEL = "openai/RadixArk/Qwen3.8-27B-NVFP4"
-LOCAL_BASE_URL = "http://host.containers.internal:8000/v1"  # the host's vLLM, seen from a rootless container
+# The same caps as adc-dev's T1-cloud reference cells (50 turns), so local and cloud cells compare; the wall limit is
+# longer, 60 min, because the local model is slower (stage-2 coordination, 2026-10-27).
+DEFAULT_MAX_ITERATIONS = 50
+DEFAULT_TIMEOUT_S = 3600
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -64,11 +68,33 @@ CACHE_EXCLUDES = [":(exclude,glob)**/__pycache__/**", ":(exclude,glob)**/.pytest
                   ":(exclude,glob)**/node_modules/**", ":(exclude,glob)**/.mypy_cache/**"]
 
 
+def _exclude_setup_outputs(project: Path, before: set[str], host_gitdir: Path) -> list[str]:
+    """What the item's setup step created (a module cache, say) is the environment, not the agent's change."""
+    created = sorted(p.name for p in project.iterdir() if p.name not in before)
+    if created:
+        (host_gitdir / "info").mkdir(exist_ok=True)
+        with open(host_gitdir / "info" / "exclude", "a") as f:
+            f.writelines(f"/{name}\n" for name in created)
+    return created
+
+
 def _patch_against(base_sha: str, project: Path, host_gitdir: Path) -> str:
     _host_git(host_gitdir, project, "read-tree", base_sha)  # start the index from base, not from the sandbox
     _host_git(host_gitdir, project, "add", "-A", "--", ".", *CACHE_EXCLUDES)
     return _host_git(host_gitdir, project, "diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv",
                      base_sha)
+
+
+def _leading_env(argv: list[str] | None) -> dict[str, str]:
+    """`env K=V ... cmd`: the K=V pairs. The agent's commands get the same environment the referee tests with."""
+    out: dict[str, str] = {}
+    if argv and argv[0] == "env":
+        for arg in argv[1:]:
+            if "=" not in arg or arg.startswith("-"):
+                break
+            k, v = arg.split("=", 1)
+            out[k] = v
+    return out
 
 
 def _last_agent_event(events) -> str:
@@ -79,13 +105,13 @@ def _last_agent_event(events) -> str:
     return "none"
 
 
-def _converse(item: dict, image: str, project: Path, llm: LLM, network: str | None, max_iterations: int,
-              timeout_s: float, record: dict) -> None:
-    with agent_server(ServerSpec(image=image, project_dir=project, network=network)) as ws:
+def _converse(prompt: str, image: str, project: Path, env: dict[str, str], llm: LLM, network: str | None,
+              max_iterations: int, timeout_s: float, record: dict) -> None:
+    with agent_server(ServerSpec(image=image, project_dir=project, env=env, network=network)) as ws:
         conv = Conversation(agent=get_default_agent(llm=llm, cli_mode=True), workspace=ws,
                             max_iteration_per_run=max_iterations)
         try:
-            conv.send_message(item["prompt"])
+            conv.send_message(prompt)
             try:
                 conv.run(timeout=timeout_s)
                 record["stop"] = str(conv.state.execution_status)
@@ -105,80 +131,64 @@ def _converse(item: dict, image: str, project: Path, llm: LLM, network: str | No
             conv.close()
 
 
-def run(item_path: Path, out: Path, model: str | None, direct: bool, max_iterations: int, timeout_s: float,
-        worker: str = "openhands") -> dict:
-    if direct and worker != "openhands":
-        raise ValueError("--direct is a debugging path for the OpenHands worker only")
-    item = json.loads(item_path.read_text())
-    root = item_path.parent
-    if "prompt_file" in item:  # the agent receives only this text (protocol: no other item field reaches any arm)
-        item["prompt"] = (root / item["prompt_file"]).read_text()
-    if "referee" in item:
-        acceptance_dir(item, root)  # fail now, not after a 30-minute agent run
-    work = Path(tempfile.mkdtemp(prefix=f"atolye-{item['id']}-"))
-    if "fixture_dir" in item:  # a plain directory becomes a one-commit repository
-        origin = work / "origin"
-        shutil.copytree(root / item["fixture_dir"], origin)
-        _git(origin, "init", "-q", "-b", "main")
-        _git(origin, "add", "-A")
-        _git(origin, "-c", "user.name=atolye", "-c", "user.email=atolye@localhost", "commit", "-qm", "fixture")
-        repo, item["base"] = str(origin), "HEAD"
-    else:
-        repo = item["repo"] if "://" in item["repo"] else str((root / item["repo"]).resolve())
-    project, host_gitdir = work / "project", work / "host.git"
-    # An item may name a prepared image (agent-server base + the repository's dependencies at its base commit),
-    # so the agent and the referee see the same toolchain.
-    image = item.get("agent_image", AGENT_IMAGE)
+def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeout_s: float,
+        worker: str = "openhands", repeat: int = 0) -> dict:
+    item_file = item_dir / "item.json"
+    item = json.loads(item_file.read_text())
+    prompt = (item_dir / "requirement.md").read_text()
+    referee_binary()  # fail now, not after an hour of agent time
+    repo = str((item_dir / item["repo"]).resolve())
     started = datetime.now(timezone.utc)
     # Unique even for two runs of one item in the same second: usage is summed by this id.
-    job = f"{item['id']}-{started.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}"
+    job = f"{item_dir.name}-{started.strftime('%Y%m%dT%H%M%SZ')}-{secrets.token_hex(4)}"
+    gw_model = model or gateway.DEFAULT_MODEL
     record: dict = {
-        "arm": "C-openhands" if worker == "openhands" else f"T1-{worker}",
+        "arm": "C-openhands" if worker == "openhands" else f"C-{worker}",
         "worker": worker,
-        "item": item["id"],
+        "item": item_dir.name,
         "job": job,
+        "repeat": repeat,
         "started_at": started.isoformat(timespec="seconds"),
-        "route": "direct" if direct else "gateway",
-        "agent_image": image,
+        "model": gw_model,
+        "item_image": item["image"],
         "max_iterations": max_iterations,
+        "timeout_s": timeout_s,
     }
+    env = {**_leading_env(item.get("setup")), **_leading_env(item["test_command"])}
+    record["agent_env"] = env
+    work = Path(tempfile.mkdtemp(prefix=f"atolye-{item_dir.name}-"))
+    project, host_gitdir = work / "project", work / "host.git"
     try:
-        record["agent_image_digest"] = _image_digest(image)
+        image = agent_image(item["image"]) if worker == "openhands" else item["image"]
+        record.update(agent_image=image, agent_image_digest=_image_digest(image))
         record["base"] = base_sha = _checkout(repo, item["base"], project, host_gitdir)
-        if direct:  # debugging only: the sandbox reaches vLLM itself and nothing is counted outside the SDK
-            record["model"] = model or LOCAL_MODEL
-            llm = LLM(usage_id="builder", model=record["model"], base_url=LOCAL_BASE_URL,
-                      api_key=SecretStr("local-no-key"), num_retries=2)
-            t0 = time.monotonic()
-            _converse(item, image, project, llm, None, max_iterations, timeout_s, record)
-            record["wall_s"] = round(time.monotonic() - t0, 1)
-        else:  # measured runs: per-job key, usage counted at the gateway
-            gw_model = model or gateway.DEFAULT_MODEL
-            record["model"] = gw_model
-            gateway.up()
-            before = vllm_metrics.snapshot()
-            with gateway.job_key(job, [gw_model], ttl_s=timeout_s + 600) as key:
-                t0 = time.monotonic()  # the agent's time only: no gateway start-up or key propagation
-                if worker == "mini":  # agent loop on the host, commands in a container with no network
-                    from atolye import mini_worker  # optional extra: `uv sync --extra mini`
+        if item.get("setup"):
+            before = {p.name for p in project.iterdir()}
+            run_setup(item["image"], item["setup"], project)
+            record["setup_outputs"] = _exclude_setup_outputs(project, before, host_gitdir)
+        gateway.up()
+        before_metrics = vllm_metrics.snapshot()
+        with gateway.job_key(job, [gw_model], ttl_s=timeout_s + 600) as key:
+            t0 = time.monotonic()  # the agent's time only: no image build, setup, gateway start-up or key propagation
+            if worker == "mini":  # agent loop on the host, commands in a container with no network
+                from atolye import mini_worker  # optional extra: `uv sync --extra mini`
 
-                    record["trajectory"] = str(out.parent / f"{job}.traj.json")
-                    mini_worker.converse(item["prompt"], image, project, gw_model, gateway.HOST_URL, key,
-                                         max_iterations, timeout_s, record, Path(record["trajectory"]))
-                else:  # OpenHands: the sandbox reaches only the front filter
-                    llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
-                              api_key=SecretStr(key), num_retries=2)
-                    _converse(item, image, project, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record)
-                record["wall_s"] = round(time.monotonic() - t0, 1)
-            record.update(gateway.usage(job, started))
-            if gw_model == gateway.DEFAULT_MODEL:  # the local vLLM route: read its prefix-cache counters
-                record.update(vllm_metrics.delta(before, vllm_metrics.snapshot(), record["gw_input_tokens"]))
+                record["trajectory"] = str(out.parent / f"{job}.traj.json")
+                mini_worker.converse(prompt, image, project, env, gw_model, gateway.HOST_URL, key, max_iterations,
+                                     timeout_s, record, Path(record["trajectory"]))
+            else:  # OpenHands: the sandbox reaches only the front filter
+                llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
+                          api_key=SecretStr(key), num_retries=2)
+                _converse(prompt, image, project, env, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record)
+            record["wall_s"] = round(time.monotonic() - t0, 1)
+        record.update(gateway.usage(job, started))
+        if gw_model == gateway.DEFAULT_MODEL:  # the local vLLM route: read its prefix-cache counters
+            record.update(vllm_metrics.delta(before_metrics, vllm_metrics.snapshot(), record["gw_input_tokens"]))
         patch = _patch_against(base_sha, project, host_gitdir)
         patch_file = out.parent / f"{job}.patch"
         patch_file.write_text(patch)
         record.update(patch=str(patch_file), patch_lines=patch.count("\n"))
-        if "referee" in item:
-            record["referee"] = referee(item, root, repo, base_sha, patch_file)
+        record["referee"] = referee(item_file, patch_file, out.parent)
     finally:
         remove_tree(work)
     with out.open("a") as f:
@@ -188,18 +198,17 @@ def run(item_path: Path, out: Path, model: str | None, direct: bool, max_iterati
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="atolye-run")
-    p.add_argument("item", type=Path)
+    p.add_argument("item", type=Path, help="an item directory: item.json (P-A referee item) + requirement.md")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--model", default=None, help="gateway model name (default: the gateway's local model)")
-    p.add_argument("--direct", action="store_true", help="debug only: bypass the gateway")
     p.add_argument("--worker", choices=("openhands", "mini"), default="openhands",
-                   help="openhands (arm C) or mini (mini-swe-agent, the T1 comparison worker)")
-    p.add_argument("--max-iterations", type=int, default=60)
-    p.add_argument("--timeout", type=float, default=1800)
+                   help="openhands (arm C) or mini (mini-swe-agent, T1's second worker)")
+    p.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
+    p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
     a = p.parse_args()
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    print(json.dumps(run(a.item.resolve(), a.out.resolve(), a.model, a.direct, a.max_iterations, a.timeout,
-                         a.worker), indent=2))
+    print(json.dumps(run(a.item.resolve(), a.out.resolve(), a.model, a.max_iterations, a.timeout, a.worker),
+                     indent=2))
 
 
 if __name__ == "__main__":
