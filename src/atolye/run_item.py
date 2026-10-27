@@ -31,6 +31,9 @@ from atolye.referee import referee
 # longer, 60 min, because the local model is slower (stage-2 coordination, 2026-10-27).
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TIMEOUT_S = 3600
+# The same task wrapper as adc-dev's T1-cloud OpenHands cells (stage-2 coordination §6.6), so local and cloud cells
+# get the same prompt.
+OPENHANDS_PREFIX = "The repository is at /workspace. Work only inside it."
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -185,7 +188,9 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
             else:  # OpenHands: the sandbox reaches only the front filter
                 llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
                           api_key=SecretStr(key), num_retries=2)
-                _converse(prompt, image, project, env, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record)
+                record["prompt_version"] = "t1-cloud-prefix"
+                _converse(f"{OPENHANDS_PREFIX}\n\n{prompt}", image, project, env, llm, gateway.INTERNAL_NET,
+                          max_iterations, timeout_s, record)
             record["wall_s"] = round(time.monotonic() - t0, 1)
         record.update(gateway.usage(job, started))
         if gw_model == gateway.DEFAULT_MODEL:  # the local vLLM route: read its prefix-cache counters
