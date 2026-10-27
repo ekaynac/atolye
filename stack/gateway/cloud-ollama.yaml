@@ -1,0 +1,18 @@
+  # Cloud route (rendered only while the key file exists): Ollama Cloud, OpenAI-compatible chat completions.
+  # The key is read from the file mounted at /secrets; it is also on the front filter's redaction list.
+  - name: deepseek-v4.1-flash
+    provider:
+      custom:
+        formats:
+        - type: completions
+    requestHeaders:
+      remove: [cookie, x-session-id, x-openrouter-title, x-openrouter-app-visibility,
+               x-openrouter-experimental-metadata, http-referer, x-title, anthropic-beta, openai-organization,
+               openai-project]
+    auth:
+      key:
+        value:
+          file: /secrets/ollama-cloud.key
+    params:
+      model: deepseek-v4.1-flash
+      baseUrl: "https://ollama.com/v1"
