@@ -9,9 +9,9 @@ The agent uses mini-swe-agent's own SWE-bench config (tool calling, step limit),
 
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
-from importlib.resources import files
 from pathlib import Path
 
 # mini-swe-agent loads a user-wide .env at import time; give it an empty directory of our own instead, so another
@@ -25,18 +25,24 @@ from minisweagent.agents.default import DefaultAgent  # noqa: E402
 from minisweagent.environments.docker import DockerEnvironment  # noqa: E402
 from minisweagent.models.litellm_model import LitellmModel  # noqa: E402
 
-WORKDIR = "/testbed"  # the path mini-swe-agent's SWE-bench prompt names
-ITEM_WORKDIR = "/workspace"  # where the item's paths point (P-A runs there); the same checkout is mounted at both
+WORKDIR = "/workspace"  # where the item's paths point (P-A runs there)
+# The prompt config: by default the one adc-dev's T1-cloud cells used (mini's SWE-bench config with the work dir at
+# /workspace, a no-network note and a plain submit command), so local and cloud cells get the same prompt.
+CONFIG = Path(os.environ.get("ATOLYE_MINI_CONFIG", "/home/mega/atolye-acceptance/harness/t1.yaml"))
 
 
-def _config() -> dict:
-    return yaml.safe_load((files("minisweagent.config") / "benchmarks" / "swebench.yaml").read_text())
+def _config() -> tuple[dict, str]:
+    if CONFIG.is_file():
+        text = CONFIG.read_text()
+        return yaml.safe_load(text), f"t1-cloud:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
+    raise FileNotFoundError(f"mini config not found: {CONFIG} (set ATOLYE_MINI_CONFIG)")
 
 
 def converse(prompt: str, image: str, project: Path, item_env: dict[str, str], model: str, api_base: str, key: str,
              max_steps: int, timeout_s: float, record: dict, trajectory: Path) -> None:
-    cfg = _config()
-    env_cfg = {k: v for k, v in cfg["environment"].items() if k not in ("environment_class", "cwd")}
+    cfg, record["prompt_version"] = _config()
+    env_cfg = {k: v for k, v in cfg.get("environment", {}).items()
+               if k in ("env", "timeout", "interpreter", "forward_env")}
     env_cfg["env"] = {**{k: v for k, v in env_cfg.get("env", {}).items() if k != "BASH_ENV"},  # no conda here
                       **item_env,
                       # tools that write under $HOME (Go telemetry, caches) must not write into the work tree
@@ -45,8 +51,7 @@ def converse(prompt: str, image: str, project: Path, item_env: dict[str, str], m
         image=image, cwd=WORKDIR, executable="podman", **env_cfg,
         run_args=["--rm", "--network", "none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}",
                   "--security-opt", "no-new-privileges", "--pids-limit", "1024", "--memory", "8g",
-                  "--entrypoint", "/usr/bin/env",
-                  "-v", f"{project}:{WORKDIR}:Z", "-v", f"{project}:{ITEM_WORKDIR}:z"],
+                  "--entrypoint", "/usr/bin/env", "-v", f"{project}:{WORKDIR}:Z"],
     )
     model_cfg = {**cfg["model"], "model_name": f"openai/{model}", "cost_tracking": "ignore_errors"}
     model_cfg["model_kwargs"] = {**model_cfg.get("model_kwargs", {}), "api_base": api_base, "api_key": key}
