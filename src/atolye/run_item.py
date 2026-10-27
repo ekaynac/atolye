@@ -135,7 +135,8 @@ class Memory:
 
 
 def _converse(prompt: str, image: str, project: Path, env: dict[str, str], llm: LLM, network: str | None,
-              max_iterations: int, timeout_s: float, record: dict, memory: Memory | None = None) -> None:
+              max_iterations: int, timeout_s: float, record: dict, memory: Memory | None = None,
+              trajectory: Path | None = None) -> None:
     agent = get_default_agent(llm=llm, cli_mode=True)
     if memory:
         agent = agent.model_copy(update={"mcp_config": {"kutuphane": memory.server()}})
@@ -159,6 +160,10 @@ def _converse(prompt: str, image: str, project: Path, env: dict[str, str], llm: 
                 last_agent_event=_last_agent_event(conv.state.events),
                 memory_calls=_memory_calls(conv.state.events) if memory else 0,
             )
+            if trajectory:  # the events only: the agent config (with the MCP bearer token) is not written
+                with trajectory.open("w") as f:
+                    for ev in conv.state.events:
+                        f.write(json.dumps(ev.model_dump(mode="json")) + "\n")
         finally:
             conv.close()
 
@@ -222,8 +227,9 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
                           api_key=SecretStr(key), num_retries=2 if gw_model == gateway.DEFAULT_MODEL else 0)
                 record["prompt_version"] = "t1-cloud-prefix" + ("+memory-hint" if memory else "")
                 task = f"{OPENHANDS_PREFIX}\n\n{MEMORY_HINT}\n\n{prompt}" if memory else f"{OPENHANDS_PREFIX}\n\n{prompt}"
+                record["trajectory"] = str(out.parent / f"{job}.events.jsonl")
                 _converse(task, image, project, env, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record,
-                          memory)
+                          memory, Path(record["trajectory"]))
             record["wall_s"] = round(time.monotonic() - t0, 1)
         record.update(gateway.usage(job, started))
         if gw_model == gateway.DEFAULT_MODEL:  # the local vLLM route: read its prefix-cache counters
