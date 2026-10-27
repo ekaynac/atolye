@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -23,6 +24,16 @@ from atolye.run_item import DEFAULT_MAX_ITERATIONS, DEFAULT_TIMEOUT_S, add_memor
 MARKER = Path("/home/mega/adc-research/GPU-NOW")
 STOP = Path("/home/mega/adc-research/GPU-STOP")  # any session or the operator creates it to stop at a cell boundary
 SESSION = "atolye"
+
+
+def _foreign_gpu_jobs() -> list[str]:
+    """GPU compute processes other than vLLM (e.g. a training run). A job that writes no marker is still seen here:
+    on 2026-10-27 the training resumed without one and 18 runs shared the GPU with it."""
+    out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"],
+                         capture_output=True, text=True)
+    if out.returncode != 0:
+        return [f"nvidia-smi failed: {out.stderr.strip()[:200]}"]
+    return [line.strip() for line in out.stdout.splitlines() if line.strip() and "VLLM" not in line]
 
 
 def _done(out: Path) -> set[tuple[str, str, int]]:
@@ -58,6 +69,8 @@ def main() -> None:
                 time.sleep(60)
         if MARKER.exists() and not MARKER.read_text().startswith(SESSION + " "):
             sys.exit(f"the GPU is in use: {MARKER} says {MARKER.read_text().strip()!r}")
+        if STOP.exists() or (foreign := _foreign_gpu_jobs()):
+            sys.exit(f"the GPU is not free: {STOP if STOP.exists() else foreign}")
         MARKER.write_text(f"{SESSION} {a.job} {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     try:
         done = _done(a.out)
@@ -66,8 +79,8 @@ def main() -> None:
                 for worker in a.workers:
                     if (item.name, worker, repeat) in done:
                         continue
-                    if gpu and STOP.exists():  # e.g. the training resumes: stop at this cell boundary
-                        print(f"[{datetime.now():%H:%M}] stopping: {STOP} exists", flush=True)
+                    if gpu and (STOP.exists() or (foreign := _foreign_gpu_jobs())):  # stop at this cell boundary
+                        print(f"[{datetime.now():%H:%M}] stopping: {STOP if STOP.exists() else foreign}", flush=True)
                         return
                     print(f"[{datetime.now():%H:%M}] {item.name} {worker} repeat {repeat}", flush=True)
                     try:
