@@ -26,22 +26,25 @@ from minisweagent.environments.docker import DockerEnvironment  # noqa: E402
 from minisweagent.models.litellm_model import LitellmModel  # noqa: E402
 
 WORKDIR = "/testbed"  # the path mini-swe-agent's SWE-bench prompt names
+ITEM_WORKDIR = "/workspace"  # where the item's paths point (P-A runs there); the same checkout is mounted at both
 
 
 def _config() -> dict:
     return yaml.safe_load((files("minisweagent.config") / "benchmarks" / "swebench.yaml").read_text())
 
 
-def converse(prompt: str, image: str, project: Path, model: str, api_base: str, key: str, max_steps: int,
-             timeout_s: float, record: dict, trajectory: Path) -> None:
+def converse(prompt: str, image: str, project: Path, item_env: dict[str, str], model: str, api_base: str, key: str,
+             max_steps: int, timeout_s: float, record: dict, trajectory: Path) -> None:
     cfg = _config()
     env_cfg = {k: v for k, v in cfg["environment"].items() if k not in ("environment_class", "cwd")}
-    env_cfg["env"] = {k: v for k, v in env_cfg.get("env", {}).items() if k != "BASH_ENV"}  # no conda here
+    env_cfg["env"] = {**{k: v for k, v in env_cfg.get("env", {}).items() if k != "BASH_ENV"},  # no conda here
+                      **item_env}
     env = DockerEnvironment(
         image=image, cwd=WORKDIR, executable="podman", **env_cfg,
-        run_args=["--rm", "--network", "none", "--userns=keep-id", "--security-opt", "no-new-privileges",
-                  "--pids-limit", "1024", "--memory", "8g", "--entrypoint", "/usr/bin/env",
-                  "-v", f"{project}:{WORKDIR}:Z"],
+        run_args=["--rm", "--network", "none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}",
+                  "--security-opt", "no-new-privileges", "--pids-limit", "1024", "--memory", "8g",
+                  "--entrypoint", "/usr/bin/env",
+                  "-v", f"{project}:{WORKDIR}:Z", "-v", f"{project}:{ITEM_WORKDIR}:z"],
     )
     model_cfg = {**cfg["model"], "model_name": f"openai/{model}", "cost_tracking": "ignore_errors"}
     model_cfg["model_kwargs"] = {**model_cfg.get("model_kwargs", {}), "api_base": api_base, "api_key": key}

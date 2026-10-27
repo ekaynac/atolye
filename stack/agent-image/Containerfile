@@ -1,0 +1,20 @@
+# The OpenHands agent server on top of an item's image: the item's toolchain, OpenHands' tools.
+# Same approach as the adc-dev stage-2 harness (auto-dev-cycle, Apache-2.0). The agent server is a standalone
+# (PyInstaller, glibc) binary, so the item image must be glibc-based. tmux comes from the item image's own archive
+# when apt-get exists (else OpenHands falls back to its subprocess terminal).
+ARG ITEM_IMAGE
+FROM ghcr.io/openhands/agent-server@sha256:a297711073c7d9c00350d3e78b82d2240bcd0e07e9bf379981c39a3deb120cd6 AS oh
+FROM ${ITEM_IMAGE}
+USER root
+RUN if command -v apt-get >/dev/null; then \
+      apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends tmux \
+      && rm -rf /var/lib/apt/lists/*; fi
+COPY --from=oh /usr/bin/tini-static /usr/local/bin/oh-tini
+COPY --from=oh /usr/local/bin/openhands-agent-server /usr/local/bin/openhands-agent-server
+ENV OH_ENABLE_VSCODE=false LOG_JSON=true LC_ALL=C.UTF-8 LANG=C.UTF-8 HOME=/tmp/home
+# The server keeps its state under ./workspace/ relative to its cwd: keep it out of the mounted /workspace, and
+# writable for the host uid the container runs as (rootless, --userns=keep-id).
+RUN mkdir -p /opt/openhands-server /tmp/home && chmod 1777 /opt/openhands-server /tmp/home
+WORKDIR /opt/openhands-server
+ENTRYPOINT ["/usr/local/bin/oh-tini", "--", "/usr/local/bin/openhands-agent-server"]
+CMD []

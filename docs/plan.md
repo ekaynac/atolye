@@ -17,19 +17,25 @@
 
 | Part | State |
 |---|---|
-| `atolye.podman`: Agent Server in rootless Podman (`--userns=keep-id`, loopback port, no-new-privileges, pids and memory limits) | done, smoke-tested |
-| `atolye.run_item`: item → checkout → agent → patch → referee → one JSON line | done, smoke-tested |
+| `atolye.podman`: Agent Server in rootless Podman (`--userns=keep-id`, loopback port, no-new-privileges, pids and memory limits); derived agent image per item image (`stack/agent-image/Containerfile`); the item's `setup` step before the agent | done; offline `go test` checked in the sandbox |
+| `atolye.run_item`: item dir (P-A `item.json` + `requirement.md`) → checkout → setup → agent → patch → P-A → one JSON line | done |
 | Host-side git never touches the sandbox's `.git` (separate bare repository) | done, checked against a hostile `.git` (fsmonitor, filter, textconv: none ran) |
-| `atolye.referee`: **stand-in** (allowed paths, protected files, read-only hidden tests, no network) | done; P-A (language-agnostic `adc dev referee`) replaces it for measured runs |
+| `atolye.referee`: **P-A** (`adc dev referee`, auto-dev-cycle `9ee8a40a`), the one referee for every arm; `could_not_run` is judged again | done; set G reference accepted / empty rejected through the wrapper |
 | Front filter + agentgateway (per-job keys, usage per job; `docs/gateway.md`) | done, T2 9/9 |
-| `--worker mini` (mini-swe-agent, T1's comparison worker) | runs; first smoke produced no patch (40 steps): look at its trajectory on the next GPU slot |
+| `--worker mini` (mini-swe-agent, T1's second worker) | runs; trajectories saved |
+| `atolye-campaign`: cells one at a time, `GPU-NOW` marker, resume at cell boundaries | done |
 | vLLM prefix-cache deltas per run; `atolye-report` | done |
-| Set P (4 items, private hidden acceptance, fairness-reviewed) | done |
-| Set G (Go) and a Go-capable agent image | waits for adc-dev's items |
+| Set P in P-A format (private; two-sided with P-A) | in progress |
+| Set G (Go; adc-dev's items, private copy) | ready |
 | Kütüphane memory over MCP (headless token) | after `ekaynac/kutuphane#73` |
+
+## Caps (stage-2 coordination, 2026-10-27)
+
+- 50 turns (the same as adc-dev's T1-cloud cells) and 60 min wall per item.
+- Parallel 1, the same as arm A.
+- The agent gets the item's `env K=V` pairs and no network.
 
 ## Known gaps
 
 - **vLLM's counters are server-wide.** A run's cache share counts only when it was the server's only user
-  (`vllm_exclusive`). The GPU rule (one arm at a time) is what makes that hold.
-- **The stand-in referee is not P-A.** Measured runs wait for P-A.
+  (`vllm_exclusive`). The GPU marker (one session at a time) is what makes that hold.
