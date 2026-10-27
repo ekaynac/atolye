@@ -5,6 +5,7 @@
 #   so the admin API stays on the container's loopback, unreachable from sandboxes.
 # - Every LLM request is logged as JSON with the job id and the cache token fields, so usage is counted here, per job.
 config:
+  statsAddr: "127.0.0.1:15020"  # metrics stay on the container's loopback, out of the sandboxes' reach
   database:
     url: sqlite:///data/data.db
   logging:
