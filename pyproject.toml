@@ -13,6 +13,13 @@ dependencies = [
 
 [project.scripts]
 atolye-run = "atolye.run_item:main"
+atolye-report = "atolye.report:main"
+
+[project.optional-dependencies]
+# mini-swe-agent: the alternative worker for stage-2 test T1 (OpenHands vs mini-swe-agent on the same items).
+mini = [
+    "mini-swe-agent==2.4.6",
+]
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]

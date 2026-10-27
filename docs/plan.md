@@ -1,6 +1,6 @@
 # Plan
 
-**Source of the decisions:** `/home/mega/adc-research/DECISIONS.md` (R13–R26) and the research in that directory.
+**Source of the decisions:** `/home/mega/adc-research/DECISIONS.md` (R13–R30) and the research in that directory.
 
 ## Principles
 
@@ -18,16 +18,18 @@
 | Part | State |
 |---|---|
 | `atolye.podman`: Agent Server in rootless Podman (`--userns=keep-id`, loopback port, no-new-privileges, pids and memory limits) | done, smoke-tested |
-| `atolye.run_item`: item → checkout → OpenHands headless → patch → referee → one JSON line | done, smoke-tested |
-| `atolye.referee`: **stand-in** (clean checkout, protected-path refusal, hidden files, no network) | done; replaced by P-A (language-agnostic `adc dev referee`) for measured runs |
-| Gateway in front of the model (per-job key, usage counting) | next: T2 with agentgateway |
+| `atolye.run_item`: item → checkout → agent → patch → referee → one JSON line | done, smoke-tested |
+| Host-side git never touches the sandbox's `.git` (separate bare repository) | done, checked against a hostile `.git` (fsmonitor, filter, textconv: none ran) |
+| `atolye.referee`: **stand-in** (allowed paths, protected files, read-only hidden tests, no network) | done; P-A (language-agnostic `adc dev referee`) replaces it for measured runs |
+| Front filter + agentgateway (per-job keys, usage per job; `docs/gateway.md`) | done, T2 9/9 |
+| `--worker mini` (mini-swe-agent, T1's comparison worker) | runs; first smoke produced no patch (40 steps): look at its trajectory on the next GPU slot |
+| vLLM prefix-cache deltas per run; `atolye-report` | done |
+| Set P (4 items, private hidden acceptance, fairness-reviewed) | done |
+| Set G (Go) and a Go-capable agent image | waits for adc-dev's items |
 | Kütüphane memory over MCP (headless token) | after `ekaynac/kutuphane#73` |
-| Item sets G (Go) and P (Python/TypeScript, public repos) with hidden acceptance | next |
 
 ## Known gaps
 
-- **Cache-read tokens are not visible** from vLLM responses (`prompt_tokens_details` is null). Read vLLM's
-  `/metrics` prefix-cache counters per run, or enable prompt-token details on the server (that is the server
-  owner's decision).
-- **The model call goes straight from the container to vLLM.** There is no key on the local route, but there is no
-  per-job accounting either until the gateway exists.
+- **vLLM's counters are server-wide.** A run's cache share counts only when it was the server's only user
+  (`vllm_exclusive`). The GPU rule (one arm at a time) is what makes that hold.
+- **The stand-in referee is not P-A.** Measured runs wait for P-A.

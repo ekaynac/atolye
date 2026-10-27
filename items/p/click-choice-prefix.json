@@ -9,6 +9,7 @@
   "referee": {
     "image": "localhost/atolye-p-click-choice-prefix:base",
     "private": true,
+    "allowed_paths": ["src/click/*", "tests/*", "docs/*", "CHANGES.md"],
     "acceptance_dir": "click-choice-prefix/acceptance",
     "test_cmd": [
       "env",
