@@ -176,6 +176,12 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
                 record["trajectory"] = str(out.parent / f"{job}.traj.json")
                 mini_worker.converse(prompt, image, project, env, gw_model, gateway.HOST_URL, key, max_iterations,
                                      timeout_s, record, Path(record["trajectory"]))
+                # mini's SWE-bench protocol writes its submission to patch.txt; that is the harness's file, not a change
+                submission = project / "patch.txt"
+                in_base = subprocess.run(["git", f"--git-dir={host_gitdir}", "cat-file", "-e", f"{base_sha}:patch.txt"],
+                                         capture_output=True).returncode == 0
+                if submission.is_file() and not in_base:
+                    submission.unlink()
             else:  # OpenHands: the sandbox reaches only the front filter
                 llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
                           api_key=SecretStr(key), num_retries=2)

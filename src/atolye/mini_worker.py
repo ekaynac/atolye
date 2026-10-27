@@ -38,7 +38,9 @@ def converse(prompt: str, image: str, project: Path, item_env: dict[str, str], m
     cfg = _config()
     env_cfg = {k: v for k, v in cfg["environment"].items() if k not in ("environment_class", "cwd")}
     env_cfg["env"] = {**{k: v for k, v in env_cfg.get("env", {}).items() if k != "BASH_ENV"},  # no conda here
-                      **item_env}
+                      **item_env,
+                      # tools that write under $HOME (Go telemetry, caches) must not write into the work tree
+                      "HOME": "/tmp", "XDG_CONFIG_HOME": "/tmp/.config", "XDG_CACHE_HOME": "/tmp/.cache"}
     env = DockerEnvironment(
         image=image, cwd=WORKDIR, executable="podman", **env_cfg,
         run_args=["--rm", "--network", "none", "--userns=keep-id", f"--user={os.getuid()}:{os.getgid()}",

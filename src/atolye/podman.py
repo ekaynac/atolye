@@ -68,8 +68,8 @@ def agent_image(item_image: str) -> str:
 def run_setup(image: str, argv: list[str], project_dir: Path, timeout_s: float = 1800) -> None:
     """The item's setup step (for example a dependency download), with the network, as P-A runs it, so the agent's
     sandbox (no network) starts from the same prepared workspace the referee tests in."""
-    proc = subprocess.run(["podman", "run", "--rm", *_user(), "-v", f"{project_dir}:{WORKDIR}:Z", "-w", WORKDIR,
-                           "--entrypoint", argv[0], image, *argv[1:]],
+    proc = subprocess.run(["podman", "run", "--rm", *_user(), "-e", "HOME=/tmp", "-v", f"{project_dir}:{WORKDIR}:Z",
+                           "-w", WORKDIR, "--entrypoint", argv[0], image, *argv[1:]],
                           capture_output=True, text=True, timeout=timeout_s)
     if proc.returncode != 0:
         raise RuntimeError(f"item setup failed ({proc.returncode}): {(proc.stdout + proc.stderr)[-1500:]}")
