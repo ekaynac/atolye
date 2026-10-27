@@ -1,0 +1,14 @@
+Add a "recently greeted" list to the home page of this Vite + Vue app.
+
+Behaviour:
+1. Every time the `/hi/:name` page is displayed, the app remembers that name, however the page was reached: the Go button, Enter in the name input, a link in the new list, or opening or reloading the URL directly. The name is remembered with leading and trailing whitespace removed; a name that is empty after trimming is not remembered. The page still renders as before.
+2. The home page `/` shows the remembered names, most recently greeted first, at most 5 (older ones are dropped).
+3. Names are de-duplicated ignoring case: greeting `alice` after `Alice` leaves a single entry, moved to the top and spelled as most recently greeted (`alice`).
+4. The list survives page reloads (keep it in `localStorage`).
+5. Markup on `/`: while at least one name is remembered, render a `<ul data-testid="recent-names">` with one `<li>` per name, in that order. Each `<li>` contains exactly one link (`<a>`, for example a `RouterLink`) whose text is exactly the name and whose `href` is `/hi/` followed by `encodeURIComponent(name)` (for `Zoë Q`: `/hi/Zo%C3%AB%20Q`); clicking it opens that page. Next to the list, render a button with `data-testid="clear-recent"` and the text `Clear` that forgets all names (they stay forgotten after a reload). While no name is remembered, the page has no `data-testid="recent-names"` element at all.
+6. The name input on `/` trims too: the Go button is disabled while the input is empty or whitespace only, and Enter does nothing in that case. Otherwise both the Go button and Enter navigate to `/hi/` followed by `encodeURIComponent` of the trimmed name (typing `  Alice  ` opens `/hi/Alice`). Keep the existing name input component (`TheInput`, which renders `id="input"`) and the button labelled exactly `Go`.
+7. Everything else keeps working as before (the `/hi/:name` page still shows `Hi, <name>`), and the pages throw no uncaught JavaScript errors.
+
+Where changes may go: `src/`, `test/` and `README.md`; the generated `auto-imports.d.ts` and `components.d.ts` may change too. The evaluation refuses the whole change if it touches anything else (for example `vite.config.ts`, `uno.config.ts`, `package.json` or a lockfile).
+
+Environment: there is no internet access. The dependencies are preinstalled in `/node_modules` (Node resolves them from the repository). From the repository root, `/node_modules/.bin/vitest run` runs the unit tests, `/node_modules/.bin/vite build` builds into `dist/`, and `/node_modules/.bin/vite preview --port 4173` serves that build. The build prints a warning that web fonts could not be fetched (`[unocss] Failed to fetch web fonts`): that is expected offline and harmless; leave the font configuration as it is. Playwright with Chromium is installed (`import { chromium } from 'playwright'` in a Node ES module) if you want to check the UI in a headless browser.

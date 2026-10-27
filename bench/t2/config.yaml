@@ -1,6 +1,7 @@
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
 # T2 check gateway: the production template's policies, plus routes to a fake upstream that records what it receives.
 config:
+  statsAddr: "127.0.0.1:15020"
   database:
     url: sqlite:///data/data.db
   logging:
