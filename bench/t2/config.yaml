@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# T2 check gateway: the production template's policies, plus routes to a fake upstream that records what it receives.
+config:
+  database:
+    url: sqlite:///data/data.db
+  logging:
+    format: json
+frontendPolicies:
+  accessLog:
+    add:
+      job: 'apiKey.job'
+      cached_input_tokens: 'llm.cachedInputTokens'
+      cache_creation_input_tokens: 'llm.cacheCreationInputTokens'
+gateways:
+  default:
+    port: 4000
+llm:
+  policies:
+    apiKey:
+      mode: strict
+      keys: KEYS
+  models:
+  - name: qwen3.8-27b
+    provider:
+      custom:
+        formats:
+        - type: completions
+    # Denylist only: agentgateway has no inbound-header allowlist (T2 check 3). Known routing/billing/session headers.
+    requestHeaders: &strip
+      remove: [cookie, x-session-id, x-openrouter-title, x-openrouter-app-visibility,
+               x-openrouter-experimental-metadata, http-referer, x-title, anthropic-beta, openai-organization,
+               openai-project]
+    params:
+      model: RadixArk/Qwen3.8-27B-NVFP4
+      baseUrl: "http://host.containers.internal:8000/v1"
+  - name: echo
+    requestHeaders: *strip
+    provider:
+      custom:
+        formats:
+        - type: completions
+    params:
+      model: pinned-echo-model
+      baseUrl: "http://atolye-t2-echo:8080/v1"
+      apiKey: "UPSTREAM-SECRET-0123456789"
+  - name: echo-redirect
+    requestHeaders: *strip
+    provider:
+      custom:
+        formats:
+        - type: completions
+    params:
+      model: pinned-echo-model
+      baseUrl: "http://atolye-t2-echo:8080/redirect/v1"
