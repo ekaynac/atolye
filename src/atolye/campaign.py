@@ -24,16 +24,19 @@ from atolye.run_item import DEFAULT_MAX_ITERATIONS, DEFAULT_TIMEOUT_S, add_memor
 MARKER = Path("/home/mega/adc-research/GPU-NOW")
 STOP = Path("/home/mega/adc-research/GPU-STOP")  # any session or the operator creates it to stop at a cell boundary
 SESSION = "atolye"
+# Resident inference servers that share the GPU by design; anything else (a training run) means the GPU is not free.
+INFERENCE_SERVERS = ("VLLM::", "ollama/llama-server")
 
 
 def _foreign_gpu_jobs() -> list[str]:
-    """GPU compute processes other than vLLM (e.g. a training run). A job that writes no marker is still seen here:
-    on 2026-10-27 the training resumed without one and 18 runs shared the GPU with it."""
+    """GPU compute processes other than the resident inference servers. A job that writes no marker is still seen
+    here: on 2026-10-27 the training resumed without one and 18 runs shared the GPU with it."""
     out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,process_name", "--format=csv,noheader"],
                          capture_output=True, text=True)
     if out.returncode != 0:
         return [f"nvidia-smi failed: {out.stderr.strip()[:200]}"]
-    return [line.strip() for line in out.stdout.splitlines() if line.strip() and "VLLM" not in line]
+    return [line.strip() for line in out.stdout.splitlines()
+            if line.strip() and not any(name in line for name in INFERENCE_SERVERS)]
 
 
 def _done(out: Path) -> set[tuple[str, str, int]]:
