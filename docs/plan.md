@@ -22,7 +22,7 @@
 | Host-side git never touches the sandbox's `.git` (separate bare repository) | done, checked against a hostile `.git` (fsmonitor, filter, textconv: none ran) |
 | `atolye.referee`: **P-A** (`adc dev referee`, auto-dev-cycle `9ee8a40a`), the one referee for every arm; `could_not_run` is judged again | done; set G reference accepted / empty rejected through the wrapper |
 | Front filter + agentgateway (per-job keys, usage per job; `docs/gateway.md`) | done, T2 9/9 |
-| `--worker mini` (mini-swe-agent, T1's second worker) | runs; trajectories saved; `HOME` outside the work tree |
+| `--worker mini` (mini-swe-agent): **the default worker** for well-specified items on the local model (stage 2: 16/20 accepted, 0.46M input tokens per accepted result against OpenHands' 14/20 and 1.05M); OpenHands when the task needs MCP tools, a browser or the Agent Server API | runs; trajectories saved; `HOME` outside the work tree |
 | The same prompts as adc-dev's T1-cloud cells (OpenHands prefix; mini's `t1.yaml` from `$ATOLYE_MINI_CONFIG`); `prompt_version` in every record | done |
 | `atolye-campaign`: cells one at a time, `GPU-NOW` marker, resume at cell boundaries | done |
 | vLLM prefix-cache deltas per run; `atolye-report` | done |
