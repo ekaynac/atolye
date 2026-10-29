@@ -4,7 +4,8 @@ Differences from the OpenHands path, by design of mini-swe-agent:
 - the agent loop runs on the host; only its bash commands run in the container, which has no network at all;
 - so the model is called from the host, straight to the gateway with the job's virtual key (the key never enters
   the container).
-The agent uses mini-swe-agent's own SWE-bench config (tool calling, step limit), with the task text as the issue.
+The agent uses atolye's config (`stack/mini/atolye.yaml`, derived from mini-swe-agent's SWE-bench config), with the
+task text as the issue. `ATOLYE_MINI_CONFIG` selects another config, e.g. stage 2's T1 config to reproduce its cells.
 """
 
 from __future__ import annotations
@@ -26,15 +27,17 @@ from minisweagent.environments.docker import DockerEnvironment  # noqa: E402
 from minisweagent.models.litellm_model import LitellmModel  # noqa: E402
 
 WORKDIR = "/workspace"  # where the item's paths point (P-A runs there)
-# The prompt config: by default the one adc-dev's T1-cloud cells used (mini's SWE-bench config with the work dir at
-# /workspace, a no-network note and a plain submit command), so local and cloud cells get the same prompt.
-CONFIG = Path(os.environ.get("ATOLYE_MINI_CONFIG", "/home/mega/atolye-acceptance/harness/t1.yaml"))
+# The prompt config. The default is atolye's own (the agent adds tests for its change). Stage 2's cells used adc-dev's
+# T1-cloud config (t1.yaml, which forbids test changes); point ATOLYE_MINI_CONFIG at it to reproduce them.
+CONFIG = Path(os.environ.get("ATOLYE_MINI_CONFIG", Path(__file__).resolve().parents[2] / "stack" / "mini" / "atolye.yaml"))
+PROMPT_NAMES = {"t1.yaml": "t1-cloud"}  # the label stage 2's records carry
 
 
 def _config() -> tuple[dict, str]:
     if CONFIG.is_file():
         text = CONFIG.read_text()
-        return yaml.safe_load(text), f"t1-cloud:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
+        name = PROMPT_NAMES.get(CONFIG.name, CONFIG.stem)
+        return yaml.safe_load(text), f"{name}:{hashlib.sha256(text.encode()).hexdigest()[:12]}"
     raise FileNotFoundError(f"mini config not found: {CONFIG} (set ATOLYE_MINI_CONFIG)")
 
 
