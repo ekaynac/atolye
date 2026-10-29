@@ -51,7 +51,8 @@ def _done(out: Path) -> set[tuple[str, str, int]]:
 def main() -> None:
     p = argparse.ArgumentParser(prog="atolye-campaign")
     p.add_argument("--items", type=Path, nargs="+", required=True)
-    p.add_argument("--workers", nargs="+", default=["openhands", "mini"], choices=("openhands", "mini"))
+    p.add_argument("--workers", nargs="+", default=["mini"], choices=("openhands", "mini"),
+                   help="default mini; add openhands to compare, or for tasks that need MCP tools")
     p.add_argument("--repeats", type=int, default=1)
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--job", default="arm-C", help="the job name written into the marker")

@@ -176,7 +176,7 @@ def _converse(prompt: str, image: str, project: Path, env: dict[str, str], llm: 
 
 
 def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeout_s: float,
-        worker: str = "openhands", repeat: int = 0, memory: Memory | None = None) -> dict:
+        worker: str = "mini", repeat: int = 0, memory: Memory | None = None) -> dict:
     if memory and worker != "openhands":
         raise ValueError("memory (Kütüphane MCP) needs the OpenHands worker; mini-swe-agent has no MCP client")
     item_file = item_dir / "item.json"
@@ -259,8 +259,9 @@ def main() -> None:
     p.add_argument("item", type=Path, help="an item directory: item.json (P-A referee item) + requirement.md")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--model", default=None, help="gateway model name (default: the gateway's local model)")
-    p.add_argument("--worker", choices=("openhands", "mini"), default="openhands",
-                   help="openhands (arm C) or mini (mini-swe-agent, T1's second worker)")
+    p.add_argument("--worker", choices=("openhands", "mini"), default="mini",
+                   help="mini (mini-swe-agent, the default for well-specified items on the local model) or openhands "
+                        "(when the task needs MCP tools such as Kütüphane, a browser or the Agent Server API)")
     p.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
     add_memory_args(p)
