@@ -31,9 +31,10 @@
 | Kütüphane memory over MCP for OpenHands (T3: `--memory-url`, scoped read-only bearer token from a file, `memory_calls` per record) | runs against a local pinned Kütüphane (`/home/mega/atolye-t3/`) |
 | Cloud model routes (`--model`; no GPU marker; stop on a provider refusal) | done (`docs/gateway.md`) |
 
-## Caps (stage-2 coordination, 2026-10-27)
+## Caps
 
-- 50 turns (the same as adc-dev's T1-cloud cells) and 60 min wall per item.
+- 100 turns and 60 min wall per item (operator decision on the stage-2 results; three-way report §4b). Stage 2 ran
+  at 50 turns, the same as adc-dev's T1-cloud cells.
 - Parallel 1, the same as arm A.
 - The agent gets the item's `env K=V` pairs and no network.
 

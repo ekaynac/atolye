@@ -29,9 +29,10 @@ from atolye.podman import ServerSpec, agent_image, agent_server, remove_tree, ru
 from atolye.referee import binary as referee_binary
 from atolye.referee import referee
 
-# The same caps as adc-dev's T1-cloud reference cells (50 turns), so local and cloud cells compare; the wall limit is
-# longer, 60 min, because the local model is slower (stage-2 coordination, 2026-10-27).
-DEFAULT_MAX_ITERATIONS = 50
+# 100 turns: at 50, 6 of arm C's 10 local rejections were the cap, and at 100 4 of the 5 cap-bound cells were accepted
+# (stage-2 three-way report §4b). The wall limit, 60 min, stays the budget limit. Stage-2's comparison runs used 50,
+# the same as adc-dev's T1-cloud cells; pass --max-iterations 50 to reproduce them.
+DEFAULT_MAX_ITERATIONS = 100
 DEFAULT_TIMEOUT_S = 3600
 # The same task wrapper as adc-dev's T1-cloud OpenHands cells (stage-2 coordination §6.6), so local and cloud cells
 # get the same prompt.
