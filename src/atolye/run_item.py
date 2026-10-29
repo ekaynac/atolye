@@ -33,9 +33,11 @@ from atolye.referee import referee
 # longer, 60 min, because the local model is slower (stage-2 coordination, 2026-10-27).
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_TIMEOUT_S = 3600
-# The same task wrapper as adc-dev's T1-cloud OpenHands cells (stage-2 coordination §6.6), so local and cloud cells
-# get the same prompt.
+# The same task wrapper as adc-dev's T1-cloud OpenHands cells, so local and cloud cells get the same prompt: the prefix,
+# a blank line, requirement.md, a newline, then the closing line (`harness/run_openhands.py:42-43`; coordination
+# §6.22). Stage 2's arm C and T3 rows ran without the closing line (prompt_version `t1-cloud-prefix`).
 OPENHANDS_PREFIX = "The repository is at /workspace. Work only inside it."
+OPENHANDS_SUFFIX = "Make the change in the source files. When you are done, call the finish tool."
 # T3 only: the one line that tells the agent the memory exists; the tools describe themselves.
 MEMORY_HINT = ("The project's design documents and decision log are in a library you can query with the "
                "search_library and open_citation tools.")
@@ -225,8 +227,9 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
             else:  # OpenHands: the sandbox reaches only the front filter
                 llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
                           api_key=SecretStr(key), num_retries=2 if gw_model == gateway.DEFAULT_MODEL else 0)
-                record["prompt_version"] = "t1-cloud-prefix" + ("+memory-hint" if memory else "")
-                task = f"{OPENHANDS_PREFIX}\n\n{MEMORY_HINT}\n\n{prompt}" if memory else f"{OPENHANDS_PREFIX}\n\n{prompt}"
+                record["prompt_version"] = "t1-cloud" + ("+memory-hint" if memory else "")
+                hint = f"{MEMORY_HINT}\n\n" if memory else ""
+                task = f"{OPENHANDS_PREFIX}\n\n{hint}{prompt}\n{OPENHANDS_SUFFIX}"
                 record["trajectory"] = str(out.parent / f"{job}.events.jsonl")
                 _converse(task, image, project, env, llm, gateway.INTERNAL_NET, max_iterations, timeout_s, record,
                           memory, Path(record["trajectory"]))
