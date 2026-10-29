@@ -55,7 +55,10 @@ def converse(prompt: str, image: str, project: Path, item_env: dict[str, str], m
     )
     model_cfg = {**cfg["model"], "model_name": f"openai/{model}", "cost_tracking": "ignore_errors"}
     model_cfg["model_kwargs"] = {**model_cfg.get("model_kwargs", {}), "api_base": api_base, "api_key": key}
-    agent_cfg = {**cfg["agent"], "step_limit": max_steps, "cost_limit": 0, "output_path": trajectory}
+    # The caps are atolye's, never the config's: t1.yaml carries T1-cloud's 30-min wall, which would silently cap a
+    # local run below its 60-min budget (no stage-2 mini run reached 30 min: max 1,073 s).
+    agent_cfg = {**cfg["agent"], "step_limit": max_steps, "cost_limit": 0, "wall_time_limit_seconds": timeout_s,
+                 "output_path": trajectory}
     agent = DefaultAgent(LitellmModel(**model_cfg), env, **agent_cfg)
     result: dict = {}
     done = threading.Event()
