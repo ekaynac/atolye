@@ -38,9 +38,13 @@ DEFAULT_TIMEOUT_S = 3600
 # §6.22). Stage 2's arm C and T3 rows ran without the closing line (prompt_version `t1-cloud-prefix`).
 OPENHANDS_PREFIX = "The repository is at /workspace. Work only inside it."
 OPENHANDS_SUFFIX = "Make the change in the source files. When you are done, call the finish tool."
-# T3 only: the one line that tells the agent the memory exists; the tools describe themselves.
+# T3 only: the lines that tell the agent the memory exists and how to read it cheaply. Kütüphane's guide
+# (docs/guide/agent-memory.md §4, kutuphane#121): search with max_chars, then open only the passages needed. The first
+# T3 (2026-10-27) used only the first sentence (prompt_version `+memory-hint`); full passages in every search result
+# cost +50 % input tokens.
 MEMORY_HINT = ("The project's design documents and decision log are in a library you can query with the "
-               "search_library and open_citation tools.")
+               "search_library and open_citation tools. Call search_library with max_chars: 300, then call "
+               "open_citation only for the passages that you need.")
 KUTUPHANE_TOOLS = ("search_library", "open_citation", "ask_library", "read_document", "list_books")
 
 
@@ -227,7 +231,7 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
             else:  # OpenHands: the sandbox reaches only the front filter
                 llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
                           api_key=SecretStr(key), num_retries=2 if gw_model == gateway.DEFAULT_MODEL else 0)
-                record["prompt_version"] = "t1-cloud" + ("+memory-hint" if memory else "")
+                record["prompt_version"] = "t1-cloud" + ("+memory-snippets" if memory else "")
                 hint = f"{MEMORY_HINT}\n\n" if memory else ""
                 task = f"{OPENHANDS_PREFIX}\n\n{hint}{prompt}\n{OPENHANDS_SUFFIX}"
                 record["trajectory"] = str(out.parent / f"{job}.events.jsonl")
