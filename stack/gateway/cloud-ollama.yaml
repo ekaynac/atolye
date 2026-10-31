@@ -16,3 +16,20 @@
     params:
       model: deepseek-v4.1-flash
       baseUrl: "https://ollama.com/v1"
+  # A Spark-sized model for the T3 rerun (operator, 2026-10-31): dense 31B, tools, 262k context.
+  - name: gemma4-31b
+    provider:
+      custom:
+        formats:
+        - type: completions
+    requestHeaders:
+      remove: [cookie, x-session-id, x-openrouter-title, x-openrouter-app-visibility,
+               x-openrouter-experimental-metadata, http-referer, x-title, anthropic-beta, openai-organization,
+               openai-project]
+    auth:
+      key:
+        value:
+          file: /secrets/ollama-cloud.key
+    params:
+      model: "gemma4:31b"
+      baseUrl: "https://ollama.com/v1"
