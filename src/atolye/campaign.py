@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -37,6 +38,19 @@ def _foreign_gpu_jobs() -> list[str]:
         return [f"nvidia-smi failed: {out.stderr.strip()[:200]}"]
     return [line.strip() for line in out.stdout.splitlines()
             if line.strip() and not any(name in line for name in INFERENCE_SERVERS)]
+
+# A cell's sandbox may use up to 8 GiB (podman --memory 8g) plus the host-side runner. The host is shared and its GPU
+# memory is system memory: on 2026-10-31 an OOM cascade (10:59–11:48) killed other users' services while a T3 rerun
+# ran beside a training job. So no cell starts unless this much memory is available.
+MIN_AVAILABLE_GIB = float(os.environ.get("ATOLYE_MIN_AVAILABLE_GIB", "16"))
+
+
+def _available_gib() -> float:
+    for line in Path("/proc/meminfo").read_text().splitlines():
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) / 1024 / 1024
+    return 0.0
+
 
 
 def _done(out: Path) -> set[tuple[str, str, int]]:
@@ -85,6 +99,10 @@ def main() -> None:
                         continue
                     if gpu and (STOP.exists() or (foreign := _foreign_gpu_jobs())):  # stop at this cell boundary
                         print(f"[{datetime.now():%H:%M}] stopping: {STOP if STOP.exists() else foreign}", flush=True)
+                        return
+                    if (avail := _available_gib()) < MIN_AVAILABLE_GIB:  # every campaign, cloud ones too
+                        print(f"[{datetime.now():%H:%M}] stopping: {avail:.1f} GiB available, "
+                              f"below {MIN_AVAILABLE_GIB:g} GiB", flush=True)
                         return
                     print(f"[{datetime.now():%H:%M}] {item.name} {worker} repeat {repeat}", flush=True)
                     try:
