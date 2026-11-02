@@ -13,6 +13,7 @@ import json
 import secrets
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -249,9 +250,17 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
         record["referee"] = referee(item_file, patch_file, out.parent)
     finally:
         remove_tree(work)
-    with out.open("a") as f:
-        f.write(json.dumps(record) + "\n")
+    append_record(out, record)
     return record
+
+# Parallel cells (atolye-campaign --parallel) run in threads of one process: one lock keeps each record one whole line.
+_APPEND_LOCK = threading.Lock()
+
+
+def append_record(out: Path, record: dict) -> None:
+    with _APPEND_LOCK, out.open("a") as f:
+        f.write(json.dumps(record) + "\n")
+
 
 
 def main() -> None:

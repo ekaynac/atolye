@@ -16,11 +16,13 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 from pathlib import Path
 
 from atolye import gateway
-from atolye.run_item import DEFAULT_MAX_ITERATIONS, DEFAULT_TIMEOUT_S, add_memory_args, memory_from_args, run
+from atolye.run_item import (DEFAULT_MAX_ITERATIONS, DEFAULT_TIMEOUT_S, add_memory_args, append_record,
+                             memory_from_args, run)
 
 MARKER = Path("/home/mega/adc-research/GPU-NOW")
 STOP = Path("/home/mega/adc-research/GPU-STOP")  # any session or the operator creates it to stop at a cell boundary
@@ -73,6 +75,9 @@ def main() -> None:
     p.add_argument("--wait", action="store_true", help="wait until the marker is free instead of refusing")
     p.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    p.add_argument("--parallel", type=int, default=1,
+                   help="cells at a time (default 1). Each cell is one sandbox of up to 8 GiB; the memory floor is "
+                        "checked before every new cell")
     p.add_argument("--model", default=None,
                    help="gateway model name; a cloud model does not take the GPU marker (default: the local model)")
     add_memory_args(p)
@@ -92,36 +97,61 @@ def main() -> None:
         MARKER.write_text(f"{SESSION} {a.job} {datetime.now().strftime('%Y-%m-%d %H:%M')}\n")
     try:
         done = _done(a.out)
-        for repeat in range(a.repeats):  # repeat-major: every cell once before any cell twice
-            for item in a.items:
-                for worker in a.workers:
-                    if (item.name, worker, repeat) in done:
-                        continue
-                    if gpu and (STOP.exists() or (foreign := _foreign_gpu_jobs())):  # stop at this cell boundary
-                        print(f"[{datetime.now():%H:%M}] stopping: {STOP if STOP.exists() else foreign}", flush=True)
-                        return
-                    if (avail := _available_gib()) < MIN_AVAILABLE_GIB:  # every campaign, cloud ones too
-                        print(f"[{datetime.now():%H:%M}] stopping: {avail:.1f} GiB available, "
-                              f"below {MIN_AVAILABLE_GIB:g} GiB", flush=True)
-                        return
-                    print(f"[{datetime.now():%H:%M}] {item.name} {worker} repeat {repeat}", flush=True)
-                    try:
-                        rec = run(item.resolve(), a.out, a.model, a.max_iterations, a.timeout, worker, repeat=repeat,
-                                  memory=memory)
-                    except Exception as exc:  # infrastructure (setup, podman, referee binary): record it, go on
-                        rec = {"arm": f"C-{worker}", "worker": worker, "item": item.name, "repeat": repeat,
-                               "stop": f"infra_error: {type(exc).__name__}: {exc}"[:500],
-                               "referee": {"verdict": "could_not_run"}}
-                        with a.out.open("a") as f:
-                            f.write(json.dumps(rec) + "\n")
-                    print(f"  -> {rec.get('referee', {}).get('verdict')} in {rec.get('wall_s')} s", flush=True)
-                    if rec.get("gw_quota_errors"):  # a provider's auth or quota refusal: stop, never retry in a loop
-                        print(f"[{datetime.now():%H:%M}] stopping: the provider refused "
-                              f"({rec['gw_quota_errors']} auth/quota errors)", flush=True)
-                        return
+        # repeat-major: every cell once before any cell twice
+        cells = [(item, worker, repeat) for repeat in range(a.repeats) for item in a.items for worker in a.workers
+                 if (item.name, worker, repeat) not in done]
+        _run_cells(cells, a, gpu, memory)
     finally:
         if gpu and MARKER.exists() and MARKER.read_text().startswith(SESSION + " "):
             MARKER.unlink()
+
+
+def _stop_reason(gpu: bool) -> str | None:
+    """Why no new cell may start now (cells already running finish)."""
+    if gpu and (STOP.exists() or (foreign := _foreign_gpu_jobs())):
+        return f"{STOP if STOP.exists() else foreign}"
+    if (avail := _available_gib()) < MIN_AVAILABLE_GIB:  # every campaign, cloud ones too
+        return f"{avail:.1f} GiB available, below {MIN_AVAILABLE_GIB:g} GiB"
+    return None
+
+
+def _one_cell(item: Path, worker: str, repeat: int, a: argparse.Namespace, memory) -> dict:
+    print(f"[{datetime.now():%H:%M}] {item.name} {worker} repeat {repeat}", flush=True)
+    try:
+        rec = run(item.resolve(), a.out, a.model, a.max_iterations, a.timeout, worker, repeat=repeat, memory=memory)
+    except Exception as exc:  # infrastructure (setup, podman, referee binary): record it, go on
+        rec = {"arm": f"C-{worker}", "worker": worker, "item": item.name, "repeat": repeat,
+               "stop": f"infra_error: {type(exc).__name__}: {exc}"[:500], "referee": {"verdict": "could_not_run"}}
+        append_record(a.out, rec)
+    print(f"  -> {item.name} {worker} repeat {repeat}: {rec.get('referee', {}).get('verdict')} in "
+          f"{rec.get('wall_s')} s", flush=True)
+    return rec
+
+
+def _run_cells(cells: list, a: argparse.Namespace, gpu: bool, memory) -> None:
+    """Start cells in order, at most --parallel at a time. Stop conditions are checked before every start; a provider
+    refusal stops new starts at once (never retried in a loop)."""
+    width = max(1, a.parallel)
+    pending, running, refused = list(cells), set(), False
+    with ThreadPoolExecutor(max_workers=width) as pool:
+        while pending or running:
+            while pending and not refused and len(running) < width:
+                if reason := _stop_reason(gpu):
+                    print(f"[{datetime.now():%H:%M}] stopping new cells: {reason}", flush=True)
+                    pending.clear()
+                    break
+                running.add(pool.submit(_one_cell, *pending.pop(0), a, memory))
+                if width > 1:
+                    time.sleep(5)  # stagger sandbox start-up
+            if not running:
+                break
+            finished, running = wait(running, return_when=FIRST_COMPLETED)
+            for fut in finished:
+                rec = fut.result()
+                if rec.get("gw_quota_errors") and not refused:
+                    refused = True
+                    print(f"[{datetime.now():%H:%M}] stopping new cells: the provider refused "
+                          f"({rec['gw_quota_errors']} auth/quota errors)", flush=True)
 
 
 if __name__ == "__main__":
