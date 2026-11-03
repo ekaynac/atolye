@@ -247,7 +247,8 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
         patch_file = out.parent / f"{job}.patch"
         patch_file.write_text(patch)
         record.update(patch=str(patch_file), patch_lines=patch.count("\n"))
-        record["referee"] = referee(item_file, patch_file, out.parent)
+        with _REFEREE_LOCK:  # see below: parallel referee runs time out on large items
+            record["referee"] = referee(item_file, patch_file, out.parent)
     finally:
         remove_tree(work)
     append_record(out, record)
@@ -255,6 +256,10 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
 
 # Parallel cells (atolye-campaign --parallel) run in threads of one process: one lock keeps each record one whole line.
 _APPEND_LOCK = threading.Lock()
+# The agents share the GPU well, but P-A's runs are CPU-bound test suites: three at once on default-landing (~1,500
+# tests each) took ~1,050 s per base run against ~200 s alone and hit the item's 1,500 s limit (2026-11-02). So the
+# referee runs one at a time; the next cell's agent still starts meanwhile.
+_REFEREE_LOCK = threading.Lock()
 
 
 def append_record(out: Path, record: dict) -> None:
