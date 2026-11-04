@@ -6,7 +6,7 @@ An item is a **directory** with two files:
   protected paths.
 - `requirement.md`: the only text the agent receives. No other field of the item reaches any arm.
 
-**Items with hidden acceptance are kept private until the three-way comparison ends** (`DECISIONS.md` R28), at
+**Items with hidden acceptance are private** (`DECISIONS.md` R28). They live outside this repository, at
 `$ATOLYE_ACCEPTANCE`:
 
 | Set | Location | Contents |
@@ -14,8 +14,9 @@ An item is a **directory** with two files:
 | G | `$ATOLYE_ACCEPTANCE/G/<id>/` | Go items from adc-dev |
 | P | `$ATOLYE_ACCEPTANCE/P/<id>/` | Python and TypeScript items on public repositories |
 
-**Public here:** the Containerfiles of set P's prepared images (`p/<id>.Containerfile`). The prompts and the hidden
-tests are published after the comparison.
+**Public here:** the Containerfiles of set P's prepared images (`p/<id>.Containerfile`). The comparison ended
+without arm B (atolye closed on 2026-11-04), so the prompts and hidden tests were not published. They stay private on
+the host.
 
 **Run one item:**
 
