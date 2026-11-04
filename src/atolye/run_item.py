@@ -215,7 +215,8 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
             run_setup(item["image"], item["setup"], project)
             record["setup_outputs"] = _exclude_setup_outputs(project, before, host_gitdir)
         gateway.up()
-        before_metrics = vllm_metrics.snapshot()
+        metrics_url = gateway.LOCAL_MODELS.get(gw_model)  # None for a cloud model
+        before_metrics = vllm_metrics.snapshot(metrics_url) if metrics_url else None
         with gateway.job_key(job, [gw_model], ttl_s=timeout_s + 600) as key:
             t0 = time.monotonic()  # the agent's time only: no image build, setup, gateway start-up or key propagation
             if worker == "mini":  # agent loop on the host, commands in a container with no network
@@ -232,7 +233,7 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
                     submission.unlink()
             else:  # OpenHands: the sandbox reaches only the front filter
                 llm = LLM(usage_id="builder", model=f"openai/{gw_model}", base_url=gateway.INTERNAL_URL,
-                          api_key=SecretStr(key), num_retries=2 if gw_model == gateway.DEFAULT_MODEL else 0)
+                          api_key=SecretStr(key), num_retries=2 if gw_model in gateway.LOCAL_MODELS else 0)
                 record["prompt_version"] = "t1-cloud" + ("+memory-snippets" if memory else "")
                 hint = f"{MEMORY_HINT}\n\n" if memory else ""
                 task = f"{OPENHANDS_PREFIX}\n\n{hint}{prompt}\n{OPENHANDS_SUFFIX}"
@@ -241,8 +242,9 @@ def run(item_dir: Path, out: Path, model: str | None, max_iterations: int, timeo
                           memory, Path(record["trajectory"]))
             record["wall_s"] = round(time.monotonic() - t0, 1)
         record.update(gateway.usage(job, started))
-        if gw_model == gateway.DEFAULT_MODEL:  # the local vLLM route: read its prefix-cache counters
-            record.update(vllm_metrics.delta(before_metrics, vllm_metrics.snapshot(), record["gw_input_tokens"]))
+        if metrics_url:  # a local vLLM route: read its prefix-cache counters
+            record.update(vllm_metrics.delta(before_metrics, vllm_metrics.snapshot(metrics_url),
+                                             record["gw_input_tokens"]))
         patch = _patch_against(base_sha, project, host_gitdir)
         patch_file = out.parent / f"{job}.patch"
         patch_file.write_text(patch)
