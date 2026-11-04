@@ -1,3 +1,5 @@
+> **Closed on 2026-11-04.** This is the plan as it stood. See `docs/closing-note.md` for the outcome.
+
 # Plan
 
 **Source of the decisions:** `/home/mega/adc-research/DECISIONS.md` (R13–R30) and the research in that directory.
