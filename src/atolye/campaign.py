@@ -75,6 +75,8 @@ def main() -> None:
     p.add_argument("--wait", action="store_true", help="wait until the marker is free instead of refusing")
     p.add_argument("--max-iterations", type=int, default=DEFAULT_MAX_ITERATIONS)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    p.add_argument("--until", default=None, metavar="HH:MM",
+                   help="start no new cell at or after this local time (same day); running cells finish")
     p.add_argument("--parallel", type=int, default=1,
                    help="cells at a time (default 1). Each cell is one sandbox of up to 8 GiB; the memory floor is "
                         "checked before every new cell")
@@ -85,7 +87,7 @@ def main() -> None:
     memory = memory_from_args(a)
     a.out = a.out.resolve()
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    gpu = a.model in (None, gateway.DEFAULT_MODEL)
+    gpu = a.model is None or a.model in gateway.LOCAL_MODELS
     if gpu:
         if a.wait:  # wait for the session before us in the GPU order to remove its line
             while MARKER.exists() and not MARKER.read_text().startswith(SESSION + " "):
@@ -106,8 +108,10 @@ def main() -> None:
             MARKER.unlink()
 
 
-def _stop_reason(gpu: bool) -> str | None:
+def _stop_reason(gpu: bool, until: str | None = None) -> str | None:
     """Why no new cell may start now (cells already running finish)."""
+    if until and datetime.now().strftime("%H:%M") >= until:
+        return f"--until {until} reached"
     if gpu and (STOP.exists() or (foreign := _foreign_gpu_jobs())):
         return f"{STOP if STOP.exists() else foreign}"
     if (avail := _available_gib()) < MIN_AVAILABLE_GIB:  # every campaign, cloud ones too
@@ -136,7 +140,7 @@ def _run_cells(cells: list, a: argparse.Namespace, gpu: bool, memory) -> None:
     with ThreadPoolExecutor(max_workers=width) as pool:
         while pending or running:
             while pending and not refused and len(running) < width:
-                if reason := _stop_reason(gpu):
+                if reason := _stop_reason(gpu, a.until):
                     print(f"[{datetime.now():%H:%M}] stopping new cells: {reason}", flush=True)
                     pending.clear()
                     break

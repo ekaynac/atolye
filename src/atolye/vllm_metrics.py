@@ -14,9 +14,9 @@ COUNTERS = {"vllm:prompt_tokens_total": "prompt", "vllm:prefix_cache_hits_total"
             "vllm:generation_tokens_total": "generation"}
 
 
-def snapshot() -> dict[str, float] | None:
+def snapshot(url: str = METRICS_URL) -> dict[str, float] | None:
     try:
-        with urllib.request.urlopen(METRICS_URL, timeout=5) as r:
+        with urllib.request.urlopen(url, timeout=5) as r:
             text = r.read().decode()
     except OSError:
         return None

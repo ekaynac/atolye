@@ -27,6 +27,11 @@ FRONT_IMAGE = "ghcr.io/openhands/agent-server:1.58.2-python"  # any Python 3.10+
 NAME = "atolye-gw"
 FRONT = "atolye-front"
 DEFAULT_MODEL = "qwen3.8-27b"  # the gateway's name for the local vLLM model (stack/gateway/config.yaml)
+# Local models on this host's GPU: gateway name -> the vLLM metrics URL. A campaign on any of them takes the GPU
+# marker and honours GPU-STOP. The second one is served beside the first (operator, 2026-11-04).
+LOCAL_MODELS = {DEFAULT_MODEL: "http://127.0.0.1:8000/metrics",
+                "qwen3.6-35b-a3b": "http://127.0.0.1:8002/metrics"}
+LOCAL_ROUTES = [Path(__file__).resolve().parents[2] / "stack" / "gateway" / "local-a3b.yaml"]
 INTERNAL_NET = "atolye-internal"  # sandboxes + front filter
 GW_NET = "atolye-gwnet"  # front filter + agentgateway; sandboxes are never on it
 HOST_PORT = 14000
@@ -68,6 +73,8 @@ def _render(keys: list[dict]) -> None:
     Written in place, not renamed: the container watches this exact inode through a bind mount.
     """
     text = TEMPLATE.read_text().replace("      keys: []", f"      keys: {json.dumps(keys)}")
+    for route in LOCAL_ROUTES:
+        text = text.rstrip("\n") + "\n" + route.read_text()
     for key in _active_routes():
         text = text.rstrip("\n") + "\n" + CLOUD_ROUTES[key].read_text()
     (STATE / "config.yaml").write_text(text)
